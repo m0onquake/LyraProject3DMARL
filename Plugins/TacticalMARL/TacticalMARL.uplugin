@@ -1,0 +1,18 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "Tactical MARL",
+  "Description": "Policy-driven UAV and tactical agent runtime for Lyra MARL experiments.",
+  "Category": "Gameplay",
+  "CreatedBy": "MARL-3D",
+  "CanContainContent": true,
+  "EnabledByDefault": true,
+  "Modules": [
+    {
+      "Name": "TacticalMARL",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    }
+  ]
+}
