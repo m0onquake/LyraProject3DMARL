@@ -74,6 +74,53 @@ The test records before/after/reset observations in
 `apply_test_damage` request is rejected unless the Game was explicitly started
 with `-TacticalMARLS1Test` or `-TacticalMARLS1AutoDemo`.
 
+## S2 red local perception and shared-alert acceptance
+
+`UTacticalThreatSubsystem` gives each red combatant an independent sensor with
+role-based range and FOV, visibility-channel LOS, and confidence accumulation.
+Only a successful local LOS observation may create target identity/location
+state. The shared alert transports that perceived snapshot after a
+seed-deterministic delay and decays its confidence after LOS is lost; reset
+clears every sensor, pending message, event and last-known location. S2 does not
+enable red aiming, firing or damage.
+
+S2 is disabled at D0. Use `tacticalmarl.Difficulty=1` (or one of the S2 test
+flags below) and `tacticalmarl.S2Debug=1` to display sensor sectors, LOS lines,
+state colors, confidence, propagation status and the shared last-known marker.
+The normal UDP response gains a root `red_threat` object; decentralized blue
+observations remain unchanged.
+
+Run the repeatable visible demonstration with:
+
+```powershell
+& 'E:\UE_5.3\Engine\Binaries\Win64\UnrealEditor.exe' `
+  'E:\UEproject\LyraProject\LyraProject.uproject' `
+  '/Game/MARL/UrbanDepot/Maps/L_MARL_UrbanDepot' `
+  -game -log -windowed -ResX=1600 -ResY=900 `
+  -TacticalMARLS2AutoDemo -TacticalMARLS2Capture
+```
+
+After warmup the demo resets to seed 42 and drives the acceptance-only stages
+`occluded -> visible -> lost_contact`. It saves three PNG files below
+`Saved/TacticalMARL/Screenshots`: `S2_Occluded_seed42.png`,
+`S2_Tracking_seed42.png`, and `S2_LostContact_seed42.png`. The temporary wall
+exists only in the guarded S2 acceptance path; regular sensing uses collision
+from the real map through `ECC_Visibility`.
+
+For automated acceptance, launch the Game with `-TacticalMARLS2Test`, then run:
+
+```powershell
+python Python\s2_threat_check.py --host 127.0.0.1 --port 7777 --seed 42
+```
+
+The test verifies five reset sensors, occlusion without detection, configured
+message delay, confidence decay, Tracking-to-LostContact transition, identical
+canonical alert sequences for two seed-42 runs, and complete reset clearing.
+Its report is `Saved/TacticalMARL/Reports/s2_threat_check.json`; detailed
+snapshots are recorded in `Saved/TacticalMARL/Logs/s2_threat_seed42.jsonl`.
+The `s2_test_stage` UDP request is rejected unless the Game was explicitly
+started with `-TacticalMARLS2Test` or `-TacticalMARLS2AutoDemo`.
+
 ## Supported tasks
 
 - `idle`

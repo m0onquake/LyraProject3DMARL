@@ -54,6 +54,7 @@ private:
     void RestorePreviousViewTarget();
     void TryStartAcceptanceDemo();
     void UpdateS1AcceptanceDemo();
+    void UpdateS2AcceptanceDemo();
     void TryCaptureAcceptanceScreenshot();
     UTextRenderComponent* FindOrCreateLabel(AActor* Actor, const FColor& Color, float Height);
     void RemoveStaleLabels(const TSet<TWeakObjectPtr<AActor>>& ActiveActors);
@@ -74,6 +75,12 @@ private:
     bool bAutoDemoStarted = false;
     bool bS1PartialDamageApplied = false;
     bool bS1DisableDamageApplied = false;
+    bool bS2OccludedStageApplied = false;
+    bool bS2VisibleStageApplied = false;
+    bool bS2LostStageApplied = false;
+    bool bS2OccludedScreenshotRequested = false;
+    bool bS2TrackingScreenshotRequested = false;
+    bool bS2LostScreenshotRequested = false;
     bool bScreenshotRequested = false;
     TWeakObjectPtr<AActor> S1UAVTarget;
     TWeakObjectPtr<AActor> S1UGVTarget;

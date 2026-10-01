@@ -1,6 +1,7 @@
 #include "TacticalMARLEpisodeSubsystem.h"
 
 #include "TacticalMARLMissionSubsystem.h"
+#include "TacticalThreatSubsystem.h"
 #include "TacticalUAVPawn.h"
 #include "TacticalUGVPawn.h"
 
@@ -85,6 +86,10 @@ bool UTacticalMARLEpisodeSubsystem::ResetEpisode(int32 Seed)
     if (UTacticalMARLMissionSubsystem* Mission = GetWorld()->GetSubsystem<UTacticalMARLMissionSubsystem>())
     {
         bMissionReady = Mission->ResetMission();
+    }
+    if (UTacticalThreatSubsystem* Threat = GetWorld()->GetSubsystem<UTacticalThreatSubsystem>())
+    {
+        Threat->ResetForEpisode(Seed);
     }
 
     State = FTacticalMARLEpisodeState();

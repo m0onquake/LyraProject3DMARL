@@ -46,14 +46,17 @@ JSONL trajectories are written under `Saved/TacticalMARL/Logs` and remain
 local-only. See `Plugins/TacticalMARL/README.md` for the UDP schema, stress
 test command and report locations.
 
-## S0/S1 acceptance
+## S0-S2 acceptance
 
 The UrbanDepot Game mode includes the S0 overview/HUD and S1 blue-force health
-and disabled-state visualization. Run `Plugins/TacticalMARL/Python/s0_baseline_check.py`
-for the baseline contract and `s1_health_check.py --seed 42 --resets 10` for
-health, action-mask, reset, and duplicate-Pawn/Controller acceptance. Detailed
-evidence is recorded in `Docs/S0基线固化与可视化验收记录.md` and
-`Docs/S1蓝方生命受击与失能验收记录.md`.
+and disabled-state visualization. D1 adds S2 red-force local sensing, delayed
+shared alerts, confidence decay, LOS occlusion and last-known-position debug
+visualization without enabling red attacks. Run
+`Plugins/TacticalMARL/Python/s0_baseline_check.py` for the baseline contract,
+`s1_health_check.py --seed 42 --resets 10` for health/action-mask/reset checks,
+and launch with `-TacticalMARLS2Test` before running
+`s2_threat_check.py --seed 42` for S2. Detailed evidence is recorded in the
+corresponding `Docs/S0...`, `Docs/S1...`, and `Docs/S2...` acceptance records.
 
 ## Full local history
 

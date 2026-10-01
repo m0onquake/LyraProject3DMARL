@@ -3,6 +3,7 @@
 #include "TacticalAgentHealthComponent.h"
 #include "TacticalMARLEpisodeSubsystem.h"
 #include "TacticalMARLMissionSubsystem.h"
+#include "TacticalThreatSubsystem.h"
 #include "TacticalUAVPawn.h"
 #include "TacticalUGVPawn.h"
 
@@ -166,6 +167,20 @@ bool UTacticalPolicySubsystem::SubmitCommandJson(const FString& JsonCommand, FSt
             OutResponse = BuildResponse(bOk, bOk ? FString() : TEXT("test_damage_failed"));
             return bOk;
         }
+        if (Request.Equals(TEXT("s2_test_stage"), ESearchCase::IgnoreCase))
+        {
+            FString Stage;
+            if (!Root->TryGetStringField(TEXT("stage"), Stage))
+            {
+                OutResponse = BuildResponse(false, TEXT("missing_s2_test_stage"));
+                return false;
+            }
+            FString Error;
+            UTacticalThreatSubsystem* Threat = GetWorld()->GetSubsystem<UTacticalThreatSubsystem>();
+            const bool bOk = Threat && Threat->SetAcceptanceStage(Stage, Error);
+            OutResponse = BuildResponse(bOk, bOk ? FString() : (Error.IsEmpty() ? TEXT("s2_stage_failed") : Error));
+            return bOk;
+        }
         const bool bStepRequest = Request.Equals(TEXT("step"), ESearchCase::IgnoreCase);
         const bool bActionsRequest = Request.Equals(TEXT("actions"), ESearchCase::IgnoreCase);
         if (bStepRequest || bActionsRequest)
@@ -320,6 +335,10 @@ FString UTacticalPolicySubsystem::BuildResponse(bool bOk, const FString& Error) 
     if (const UTacticalMARLMissionSubsystem* Mission = GetWorld()->GetSubsystem<UTacticalMARLMissionSubsystem>())
     {
         Mission->AppendMissionFields(Root);
+    }
+    if (const UTacticalThreatSubsystem* Threat = GetWorld()->GetSubsystem<UTacticalThreatSubsystem>())
+    {
+        Threat->AppendThreatFields(Root);
     }
 
     // Lightweight health data used by the long-running Python evaluator.  It

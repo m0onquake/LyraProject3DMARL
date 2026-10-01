@@ -4,6 +4,7 @@
 #include "TacticalMARLCombatantProvider.h"
 #include "TacticalMARLEpisodeSubsystem.h"
 #include "TacticalMARLMissionSubsystem.h"
+#include "TacticalThreatSubsystem.h"
 #include "TacticalUAVPawn.h"
 #include "TacticalUGVPawn.h"
 
@@ -44,6 +45,9 @@ TAutoConsoleVariable<int32> CVarTacticalS0Zones(
 TAutoConsoleVariable<int32> CVarTacticalS0OverviewCamera(
     TEXT("tacticalmarl.S0OverviewCamera"), 1,
     TEXT("Use the automatic UrbanDepot S0 overview camera (0/1)."), ECVF_Default);
+TAutoConsoleVariable<int32> CVarTacticalS2Debug(
+    TEXT("tacticalmarl.S2Debug"), 1,
+    TEXT("Show red sensor FOV, LOS and shared-alert markers (0/1)."), ECVF_Default);
 
 constexpr int32 ExpectedBlueAgents = 6;
 constexpr int32 ExpectedRedAgents = 5;
@@ -109,6 +113,19 @@ FString CompactRole(const FName Role)
     Value.RemoveFromStart(TEXT("MARL.Role."));
     return Value.IsEmpty() ? TEXT("Unassigned") : Value;
 }
+
+FColor AlertColor(const ETacticalRedAlertState State)
+{
+    switch (State)
+    {
+    case ETacticalRedAlertState::Suspicious: return FColor::Yellow;
+    case ETacticalRedAlertState::Alerted: return FColor(255, 140, 0);
+    case ETacticalRedAlertState::Tracking: return FColor::Red;
+    case ETacticalRedAlertState::LostContact: return FColor(180, 70, 255);
+    case ETacticalRedAlertState::Engaging: return FColor(255, 0, 180);
+    default: return FColor(140, 140, 140);
+    }
+}
 }
 
 void UTacticalMARLVisualizationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -164,6 +181,7 @@ void UTacticalMARLVisualizationSubsystem::Tick(const float DeltaTime)
     UpdateOverviewCamera();
     TryStartAcceptanceDemo();
     UpdateS1AcceptanceDemo();
+    UpdateS2AcceptanceDemo();
     TryCaptureAcceptanceScreenshot();
 }
 
@@ -287,6 +305,7 @@ void UTacticalMARLVisualizationSubsystem::UpdateBlueLabels()
 
 void UTacticalMARLVisualizationSubsystem::UpdateRedLabels()
 {
+    const UTacticalThreatSubsystem* Threat = GetWorld()->GetSubsystem<UTacticalThreatSubsystem>();
     for (TActorIterator<AActor> It(GetWorld()); It; ++It)
     {
         TInlineComponentArray<UActorComponent*> Components;
@@ -299,15 +318,28 @@ void UTacticalMARLVisualizationSubsystem::UpdateRedLabels()
             if (!State.Actor || State.AgentId.IsNone()) continue;
             UTextRenderComponent* Label = FindOrCreateLabel(State.Actor, RedColor, 235.0f);
             if (!Label) continue;
+            const FTacticalThreatSensorState* Sensor = Threat
+                ? Threat->GetSensorStates().FindByPredicate([&State](const FTacticalThreatSensorState& Candidate)
+                    { return Candidate.SensorAgentId == State.AgentId; })
+                : nullptr;
+            const FString AlertState = Sensor
+                ? UTacticalThreatSubsystem::AlertStateToString(Sensor->AlertState).ToUpper()
+                : TEXT("UNAWARE");
+            const float AlertConfidence = Sensor ? Sensor->Confidence : 0.0f;
+            const bool bD1 = Threat && Threat->IsThreatSensingEnabled();
             Label->SetText(FText::FromString(FString::Printf(
-                TEXT("[RED] %s%s\n%s | D0 PASSIVE\nTask hold_defense | Alert UNAWARE\nHP %.0f/%.0f | %s"),
+                TEXT("[RED] %s%s\n%s | %s\nSensor %s %.2f | LOS %s\nHP %.0f/%.0f | %s"),
                 *State.AgentId.ToString(), State.bMissionObjective ? TEXT(" [PRIMARY]") : TEXT(""),
-                *CompactRole(State.Role), State.Health, State.MaxHealth,
+                *CompactRole(State.Role), bD1 ? TEXT("D1 SENSING") : TEXT("D0 PASSIVE"),
+                *AlertState, AlertConfidence, Sensor && Sensor->bDirectLineOfSight ? TEXT("DIRECT") : TEXT("NONE"),
+                State.Health, State.MaxHealth,
                 State.bAlive ? TEXT("ALIVE") : TEXT("NEUTRALIZED"))));
-            if (State.bMissionObjective) Label->SetTextRenderColor(ObjectiveColor);
-            RosterRows.Add(FString::Printf(TEXT("%s %-16s %-9s | hold_defense | HP %3.0f/%3.0f | %s"),
+            Label->SetTextRenderColor(bD1 ? AlertColor(Sensor ? Sensor->AlertState : ETacticalRedAlertState::Unaware) :
+                (State.bMissionObjective ? ObjectiveColor : RedColor));
+            RosterRows.Add(FString::Printf(TEXT("%s %-16s %-9s | %-12s %.2f | HP %3.0f/%3.0f | %s"),
                 State.bMissionObjective ? TEXT("[R*]") : TEXT("[R ]"),
-                *State.AgentId.ToString(), *CompactRole(State.Role), State.Health, State.MaxHealth,
+                *State.AgentId.ToString(), *CompactRole(State.Role), *AlertState, AlertConfidence,
+                State.Health, State.MaxHealth,
                 State.bAlive ? TEXT("ALIVE") : TEXT("NEUTRALIZED")));
         }
     }
@@ -386,10 +418,16 @@ void UTacticalMARLVisualizationSubsystem::UpdateHUD() const
         Episode.Phase == ETacticalMARLEpisodePhase::Terminated ? TEXT("TERMINATED") :
         Episode.Phase == ETacticalMARLEpisodePhase::Truncated ? TEXT("TRUNCATED") : TEXT("READY");
     const bool bS1Demo = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS1AutoDemo"));
+    const UTacticalThreatSubsystem* Threat = GetWorld()->GetSubsystem<UTacticalThreatSubsystem>();
+    const bool bD1 = Threat && Threat->IsThreatSensingEnabled();
+    const FTacticalSharedAlertState Shared = Threat ? Threat->GetSharedAlertState() : FTacticalSharedAlertState();
+    const FString SharedState = UTacticalThreatSubsystem::AlertStateToString(Shared.AlertState).ToUpper();
 
     GEngine->AddOnScreenDebugMessage(
         0x4D41524C01ull, 0.30f, FColor::White,
-        bS1Demo
+        bD1
+            ? TEXT("TACTICAL MARL | S2 LOCAL PERCEPTION / SHARED ALERT | D1 SENSORS ONLY")
+            : bS1Demo
             ? TEXT("TACTICAL MARL | S1 HEALTH / DISABLE ACCEPTANCE | D0 PASSIVE RED")
             : TEXT("TACTICAL MARL | S0 BASELINE | DIFFICULTY D0 (PASSIVE RED)"),
         false, FVector2D(1.25f, 1.25f));
@@ -399,8 +437,9 @@ void UTacticalMARLVisualizationSubsystem::UpdateHUD() const
             Episode.EpisodeId, DisplaySeed, *EpisodePhase, Episode.Step), false, FVector2D(1.10f, 1.10f));
     GEngine->AddOnScreenDebugMessage(
         0x4D41524C03ull, 0.30f, FColor(120, 255, 140),
-        FString::Printf(TEXT("MISSION PHASE: %s | TRACK %.2f | RED ALERT: UNAWARE"),
-            *MissionPhaseToString(static_cast<uint8>(Mission.Phase)).ToUpper(), Mission.TrackQuality),
+        FString::Printf(TEXT("MISSION PHASE: %s | TRACK %.2f | RED ALERT: %s %.2f"),
+            *MissionPhaseToString(static_cast<uint8>(Mission.Phase)).ToUpper(), Mission.TrackQuality,
+            *SharedState, Shared.Confidence),
         false, FVector2D(1.05f, 1.05f));
     GEngine->AddOnScreenDebugMessage(
         0x4D41524C04ull, 0.30f, Counts.bRosterValid ? FColor::Cyan : FColor::Red,
@@ -410,7 +449,7 @@ void UTacticalMARLVisualizationSubsystem::UpdateHUD() const
         false, FVector2D(1.05f, 1.05f));
     GEngine->AddOnScreenDebugMessage(
         0x4D41524C05ull, 0.30f, FColor(180, 180, 180),
-        TEXT("CVars: tacticalmarl.S0HUD / S0Labels / S0Zones / S0OverviewCamera (0 or 1)"),
+        TEXT("CVars: tacticalmarl.Difficulty / S2Debug / S0HUD / S0Labels / S0Zones / S0OverviewCamera"),
         false, FVector2D(0.85f, 0.85f));
 }
 
@@ -496,23 +535,34 @@ FString UTacticalMARLVisualizationSubsystem::BuildHUDPanelText() const
         Episode.Phase == ETacticalMARLEpisodePhase::Terminated ? TEXT("TERMINATED") :
         Episode.Phase == ETacticalMARLEpisodePhase::Truncated ? TEXT("TRUNCATED") : TEXT("READY");
     const bool bS1Demo = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS1AutoDemo"));
+    const UTacticalThreatSubsystem* Threat = GetWorld()->GetSubsystem<UTacticalThreatSubsystem>();
+    const bool bD1 = Threat && Threat->IsThreatSensingEnabled();
+    const FTacticalSharedAlertState Shared = Threat ? Threat->GetSharedAlertState() : FTacticalSharedAlertState();
+    const FString SharedState = UTacticalThreatSubsystem::AlertStateToString(Shared.AlertState).ToUpper();
     return FString::Printf(
         TEXT("TACTICAL MARL  |  %s\n")
-        TEXT("DIFFICULTY D0  |  RED POLICY: PASSIVE\n")
+        TEXT("DIFFICULTY %s  |  RED POLICY: %s\n")
         TEXT("Episode %d  |  Seed %d  |  %s  |  Step %d\n")
         TEXT("MISSION PHASE: %s  |  Track %.2f\n")
-        TEXT("RED ALERT: UNAWARE\n")
+        TEXT("RED ALERT: %s %.2f  |  Source %s  |  Target %s\n")
+        TEXT("S2 STAGE: %s  |  Delay %.2fs  |  Messages %d\n")
         TEXT("BLUE ALIVE %d/6  |  RED ALIVE %d/5\n")
         TEXT("ROSTER: %s\n")
-        TEXT("Toggle: tacticalmarl.S0HUD / S0Labels / S0Zones / S0OverviewCamera"),
-        bS1Demo ? TEXT("S1 HEALTH / DISABLE ACCEPTANCE") : TEXT("S0 BASELINE"),
+        TEXT("Toggle: tacticalmarl.Difficulty / S2Debug / S0HUD / S0Labels / S0Zones / S0OverviewCamera"),
+        bD1 ? TEXT("S2 LOCAL PERCEPTION / SHARED ALERT") :
+            (bS1Demo ? TEXT("S1 HEALTH / DISABLE ACCEPTANCE") : TEXT("S0 BASELINE")),
+        bD1 ? TEXT("D1") : TEXT("D0"), bD1 ? TEXT("LOCAL SENSORS / NO ATTACK") : TEXT("PASSIVE"),
         Episode.EpisodeId, DisplaySeed, *EpisodePhase, Episode.Step,
         *MissionPhaseToString(static_cast<uint8>(Mission.Phase)).ToUpper(), Mission.TrackQuality,
+        *SharedState, Shared.Confidence, *Shared.SourceAgentId.ToString(), *Shared.TargetAgentId.ToString(),
+        Threat ? *Threat->GetAcceptanceStage() : TEXT("none"), Shared.LastPropagationDelay, Shared.DeliveredMessageCount,
         Counts.BlueAlive, Counts.RedAlive, Counts.bRosterValid ? TEXT("VALID 6+5") : TEXT("WAITING/INVALID"));
 }
 
 FString UTacticalMARLVisualizationSubsystem::BuildRosterPanelText() const
 {
+    const UTacticalThreatSubsystem* Threat = GetWorld()->GetSubsystem<UTacticalThreatSubsystem>();
+    const FTacticalSharedAlertState Shared = Threat ? Threat->GetSharedAlertState() : FTacticalSharedAlertState();
     FString Result = TEXT("UNIT ROSTER  |  JSON AGENT IDs\n");
     Result += TEXT("Side  Agent ID          Type/Role   | Current task  | Health/Status\n");
     Result += TEXT("--------------------------------------------------------------------------\n");
@@ -521,7 +571,9 @@ FString UTacticalMARLVisualizationSubsystem::BuildRosterPanelText() const
         Result += Row;
         Result += TEXT("\n");
     }
-    Result += TEXT("\nR* = PRIMARY OBJECTIVE  |  RED SHARED ALERT: UNAWARE  |  D0 PASSIVE");
+    Result += FString::Printf(TEXT("\nR* = PRIMARY OBJECTIVE  |  RED SHARED ALERT: %s %.2f  |  %s"),
+        *UTacticalThreatSubsystem::AlertStateToString(Shared.AlertState).ToUpper(), Shared.Confidence,
+        Threat && Threat->IsThreatSensingEnabled() ? TEXT("D1 SENSORS / NO ATTACK") : TEXT("D0 PASSIVE"));
     return Result;
 }
 
@@ -560,10 +612,13 @@ void UTacticalMARLVisualizationSubsystem::DrawSceneMarkers() const
     }
     if (RedDefenseLocation.IsSet())
     {
+        const UTacticalThreatSubsystem* Threat = GetWorld()->GetSubsystem<UTacticalThreatSubsystem>();
+        const bool bD1 = Threat && Threat->IsThreatSensingEnabled();
         DrawDebugCircle(GetWorld(), RedDefenseLocation.GetValue() + FVector(0, 0, 20), 1500.0f, 48,
             RedColor, false, 0.25f, 0, 20.0f, FVector(1, 0, 0), FVector(0, 1, 0), false);
         DrawDebugString(GetWorld(), RedDefenseLocation.GetValue() + FVector(0, -1700, 500),
-            TEXT("RED DEFENSE ZONE | D0 PASSIVE"), nullptr, RedColor, 0.25f, false, 1.6f);
+            bD1 ? TEXT("RED DEFENSE ZONE | D1 LOCAL SENSORS / NO ATTACK") : TEXT("RED DEFENSE ZONE | D0 PASSIVE"),
+            nullptr, RedColor, 0.25f, false, 1.6f);
     }
     if (PrimaryObjectiveLocation.IsSet())
     {
@@ -581,6 +636,48 @@ void UTacticalMARLVisualizationSubsystem::DrawSceneMarkers() const
                 FColor::Red, false, 0.25f, 0, 20.0f, FVector(1, 0, 0), FVector(0, 1, 0), false);
             DrawDebugString(GetWorld(), Target->GetActorLocation() + FVector(0, 0, 520),
                 TEXT("S1 TEST DAMAGE | DISABLED / RETAINED"), nullptr, FColor::Red, 0.25f, false, 1.4f);
+        }
+    }
+    const UTacticalThreatSubsystem* Threat = GetWorld()->GetSubsystem<UTacticalThreatSubsystem>();
+    if (Threat && Threat->IsThreatSensingEnabled() && CVarTacticalS2Debug.GetValueOnGameThread() != 0)
+    {
+        for (const FTacticalThreatSensorState& Sensor : Threat->GetSensorStates())
+        {
+            AActor* SensorActor = Sensor.SensorActor.Get();
+            if (!SensorActor) continue;
+            const FVector Origin = SensorActor->GetActorLocation() + FVector(0, 0, 110);
+            const FVector Forward = SensorActor->GetActorForwardVector().GetSafeNormal();
+            const float DebugLength = FMath::Min(Sensor.SensorRange, 3000.0f);
+            const FVector Left = Forward.RotateAngleAxis(-Sensor.FieldOfViewDegrees * 0.5f, FVector::UpVector);
+            const FVector Right = Forward.RotateAngleAxis(Sensor.FieldOfViewDegrees * 0.5f, FVector::UpVector);
+            const FColor Color = AlertColor(Sensor.AlertState);
+            DrawDebugLine(GetWorld(), Origin, Origin + Left * DebugLength, Color, false, 0.25f, 0, 10.0f);
+            DrawDebugLine(GetWorld(), Origin, Origin + Right * DebugLength, Color, false, 0.25f, 0, 10.0f);
+            DrawDebugLine(GetWorld(), Origin, Origin + Forward * DebugLength, Color, false, 0.25f, 0, 5.0f);
+            if (Sensor.bDirectLineOfSight && !Sensor.TargetAgentId.IsNone())
+            {
+                DrawDebugLine(GetWorld(), Origin, Sensor.LastKnownLocation, FColor::Green, false, 0.25f, 0, 18.0f);
+                DrawDebugString(GetWorld(), Sensor.LastKnownLocation + FVector(0, 0, 260),
+                    FString::Printf(TEXT("DIRECT LOS | %s | %.2f"), *Sensor.TargetAgentId.ToString(), Sensor.Confidence),
+                    nullptr, FColor::Green, 0.25f, false, 1.2f);
+            }
+            else if (Sensor.bLastTraceBlocked)
+            {
+                DrawDebugLine(GetWorld(), Origin, Sensor.LastTraceEnd, FColor::Orange, false, 0.25f, 0, 14.0f);
+                DrawDebugPoint(GetWorld(), Sensor.LastTraceEnd, 35.0f, FColor::Orange, false, 0.25f);
+                DrawDebugString(GetWorld(), Sensor.LastTraceEnd + FVector(0, 0, 100),
+                    TEXT("LOS BLOCKED | NO DETECTION"), nullptr, FColor::Orange, 0.25f, false, 1.1f);
+            }
+        }
+        const FTacticalSharedAlertState Shared = Threat->GetSharedAlertState();
+        if (!Shared.TargetAgentId.IsNone())
+        {
+            const FColor SharedColor = AlertColor(Shared.AlertState);
+            DrawDebugSphere(GetWorld(), Shared.LastKnownLocation, 260.0f, 20, SharedColor, false, 0.25f, 0, 16.0f);
+            DrawDebugString(GetWorld(), Shared.LastKnownLocation + FVector(0, 0, 520),
+                FString::Printf(TEXT("SHARED %s | LAST KNOWN | %.2f"),
+                    *UTacticalThreatSubsystem::AlertStateToString(Shared.AlertState).ToUpper(), Shared.Confidence),
+                nullptr, SharedColor, 0.25f, false, 1.4f);
         }
     }
 }
@@ -617,10 +714,14 @@ void UTacticalMARLVisualizationSubsystem::UpdateOverviewCamera()
     const FVector Blue = BlueBaseLocation.GetValue();
     const FVector Red = RedDefenseLocation.GetValue();
     const bool bS1Demo = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS1AutoDemo"));
-    const FVector Center = bS1Demo
-        ? Blue + FVector(0, 0, 180)
-        : (Blue + Red) * 0.5f + FVector(0, 0, 250);
-    const float Span = bS1Demo ? 3800.0f : FMath::Max(8000.0f, FVector::Dist2D(Blue, Red));
+    const bool bS2Demo = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS2AutoDemo"));
+    const FVector Center = bS2Demo
+        ? Red + FVector(900, 0, 350)
+        : bS1Demo
+            ? Blue + FVector(0, 0, 180)
+            : (Blue + Red) * 0.5f + FVector(0, 0, 250);
+    const float Span = bS2Demo ? 4200.0f :
+        (bS1Demo ? 3800.0f : FMath::Max(8000.0f, FVector::Dist2D(Blue, Red)));
     const FVector CameraLocation = Center + FVector(-Span * 0.72f, -Span * 0.72f, Span * 1.18f);
     Camera->SetActorLocationAndRotation(CameraLocation, (Center - CameraLocation).Rotation());
 }
@@ -639,7 +740,8 @@ void UTacticalMARLVisualizationSubsystem::TryStartAcceptanceDemo()
 {
     const bool bS0Demo = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS0AutoDemo"));
     const bool bS1Demo = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS1AutoDemo"));
-    if (bAutoDemoStarted || (!bS0Demo && !bS1Demo) ||
+    const bool bS2Demo = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS2AutoDemo"));
+    if (bAutoDemoStarted || (!bS0Demo && !bS1Demo && !bS2Demo) ||
         !Counts.bRosterValid || GetWorld()->GetTimeSeconds() < 35.0f)
     {
         return;
@@ -651,7 +753,7 @@ void UTacticalMARLVisualizationSubsystem::TryStartAcceptanceDemo()
             bAutoDemoStarted = true;
             AutoDemoStartedAt = GetWorld()->GetTimeSeconds();
             UE_LOG(LogTacticalS0Visuals, Display, TEXT("%s acceptance demo started with seed 42"),
-                bS1Demo ? TEXT("S1") : TEXT("S0"));
+                bS2Demo ? TEXT("S2") : (bS1Demo ? TEXT("S1") : TEXT("S0")));
         }
     }
 }
@@ -702,8 +804,68 @@ void UTacticalMARLVisualizationSubsystem::UpdateS1AcceptanceDemo()
     }
 }
 
+void UTacticalMARLVisualizationSubsystem::UpdateS2AcceptanceDemo()
+{
+    if (!bAutoDemoStarted || !FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS2AutoDemo"))) return;
+    UTacticalThreatSubsystem* Threat = GetWorld()->GetSubsystem<UTacticalThreatSubsystem>();
+    if (!Threat) return;
+    const double Elapsed = GetWorld()->GetTimeSeconds() - AutoDemoStartedAt;
+    FString Error;
+    if (!bS2OccludedStageApplied && Elapsed >= 1.0)
+    {
+        bS2OccludedStageApplied = Threat->SetAcceptanceStage(TEXT("occluded"), Error);
+        if (!bS2OccludedStageApplied) UE_LOG(LogTacticalS0Visuals, Error, TEXT("S2 occluded stage failed: %s"), *Error);
+    }
+    if (!bS2VisibleStageApplied && Elapsed >= 3.2)
+    {
+        bS2VisibleStageApplied = Threat->SetAcceptanceStage(TEXT("visible"), Error);
+        if (!bS2VisibleStageApplied) UE_LOG(LogTacticalS0Visuals, Error, TEXT("S2 visible stage failed: %s"), *Error);
+    }
+    if (!bS2LostStageApplied && Elapsed >= 7.4)
+    {
+        bS2LostStageApplied = Threat->SetAcceptanceStage(TEXT("lost_contact"), Error);
+        if (!bS2LostStageApplied) UE_LOG(LogTacticalS0Visuals, Error, TEXT("S2 lost-contact stage failed: %s"), *Error);
+    }
+}
+
 void UTacticalMARLVisualizationSubsystem::TryCaptureAcceptanceScreenshot()
 {
+    const bool bS2Capture = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS2Capture"));
+    if (bS2Capture && bAutoDemoStarted)
+    {
+        const double Elapsed = GetWorld()->GetTimeSeconds() - AutoDemoStartedAt;
+        FString Filename;
+        bool* Flag = nullptr;
+        if (!bS2OccludedScreenshotRequested && Elapsed >= 2.2 && Elapsed < 3.1)
+        {
+            Filename = TEXT("S2_Occluded_seed42.png");
+            Flag = &bS2OccludedScreenshotRequested;
+        }
+        else if (!bS2TrackingScreenshotRequested && Elapsed >= 6.4 && Elapsed < 7.3)
+        {
+            Filename = TEXT("S2_Tracking_seed42.png");
+            Flag = &bS2TrackingScreenshotRequested;
+        }
+        else if (!bS2LostScreenshotRequested && Elapsed >= 9.5)
+        {
+            const UTacticalThreatSubsystem* Threat = GetWorld()->GetSubsystem<UTacticalThreatSubsystem>();
+            if (Threat && Threat->GetSharedAlertState().AlertState == ETacticalRedAlertState::LostContact)
+            {
+                Filename = TEXT("S2_LostContact_seed42.png");
+                Flag = &bS2LostScreenshotRequested;
+            }
+        }
+        if (Flag)
+        {
+            const FString Directory = FPaths::ProjectSavedDir() / TEXT("TacticalMARL/Screenshots");
+            FPlatformFileManager::Get().GetPlatformFile().CreateDirectoryTree(*Directory);
+            const FString FullPath = Directory / Filename;
+            FScreenshotRequest::RequestScreenshot(FullPath, true, false);
+            *Flag = true;
+            UE_LOG(LogTacticalS0Visuals, Display, TEXT("Requested S2 acceptance screenshot: %s"), *FullPath);
+        }
+        return;
+    }
     const bool bS1Capture = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS1Capture"));
     const bool bS0Capture = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS0Capture"));
     const double RequiredDelay = bS1Capture ? 4.5 : 3.0;
