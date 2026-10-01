@@ -7,6 +7,9 @@
 !/LICENSE
 !/LyraProject.uproject
 
+!/Docs/
+!/Docs/**
+
 !/Config/
 /Config/*
 !/Config/DefaultEngine.ini

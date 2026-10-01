@@ -1,5 +1,6 @@
 #include "TacticalPolicySubsystem.h"
 
+#include "TacticalAgentHealthComponent.h"
 #include "TacticalMARLEpisodeSubsystem.h"
 #include "TacticalMARLMissionSubsystem.h"
 #include "TacticalUAVPawn.h"
@@ -11,6 +12,8 @@
 #include "HAL/PlatformProcess.h"
 #include "Interfaces/IPv4/IPv4Address.h"
 #include "IPAddress.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
@@ -130,6 +133,37 @@ bool UTacticalPolicySubsystem::SubmitCommandJson(const FString& JsonCommand, FSt
         {
             const bool bOk = Episode && Episode->AdvanceEpisode();
             OutResponse = BuildResponse(bOk, bOk ? FString() : TEXT("episode_not_running"));
+            return bOk;
+        }
+        if (Request.Equals(TEXT("apply_test_damage"), ESearchCase::IgnoreCase))
+        {
+            const bool bTestEnabled = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS1Test")) ||
+                FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS1AutoDemo"));
+            if (!bTestEnabled)
+            {
+                OutResponse = BuildResponse(false, TEXT("s1_test_damage_disabled"));
+                return false;
+            }
+            FString AgentId;
+            double Damage = 0.0;
+            if (!Root->TryGetStringField(TEXT("agent_id"), AgentId) ||
+                !Root->TryGetNumberField(TEXT("damage"), Damage) || Damage <= 0.0)
+            {
+                OutResponse = BuildResponse(false, TEXT("invalid_test_damage_request"));
+                return false;
+            }
+            AActor* Target = nullptr;
+            for (TActorIterator<ATacticalUAVPawn> It(GetWorld()); It && !Target; ++It)
+            {
+                if (It->AgentId.ToString().Equals(AgentId, ESearchCase::IgnoreCase)) Target = *It;
+            }
+            for (TActorIterator<ATacticalUGVPawn> It(GetWorld()); It && !Target; ++It)
+            {
+                if (It->AgentId.ToString().Equals(AgentId, ESearchCase::IgnoreCase)) Target = *It;
+            }
+            UTacticalAgentHealthComponent* Health = UTacticalAgentHealthComponent::FindHealthComponent(Target);
+            const bool bOk = Health && Health->ApplyAgentDamage(static_cast<float>(Damage), nullptr);
+            OutResponse = BuildResponse(bOk, bOk ? FString() : TEXT("test_damage_failed"));
             return bOk;
         }
         const bool bStepRequest = Request.Equals(TEXT("step"), ESearchCase::IgnoreCase);
@@ -295,6 +329,8 @@ FString UTacticalPolicySubsystem::BuildResponse(bool bOk, const FString& Error) 
     TMap<const AController*, int32> ControllerCounts;
     int32 AgentActorCount = 0;
     int32 UnpossessedAgentCount = 0;
+    int32 BlueAliveCount = 0;
+    int32 BlueDisabledCount = 0;
     auto AddAgentDiagnostic = [&AgentIdCounts, &ControllerCounts, &AgentActorCount, &UnpossessedAgentCount](const APawn* Pawn, FName AgentId)
     {
         ++AgentActorCount;
@@ -302,8 +338,18 @@ FString UTacticalPolicySubsystem::BuildResponse(bool bOk, const FString& Error) 
         if (const AController* Controller = Pawn->GetController()) ControllerCounts.FindOrAdd(Controller)++;
         else ++UnpossessedAgentCount;
     };
-    for (TActorIterator<ATacticalUAVPawn> It(GetWorld()); It; ++It) AddAgentDiagnostic(*It, It->AgentId);
-    for (TActorIterator<ATacticalUGVPawn> It(GetWorld()); It; ++It) AddAgentDiagnostic(*It, It->AgentId);
+    for (TActorIterator<ATacticalUAVPawn> It(GetWorld()); It; ++It)
+    {
+        AddAgentDiagnostic(*It, It->AgentId);
+        BlueAliveCount += !It->HealthComponent || It->HealthComponent->IsAlive() ? 1 : 0;
+        BlueDisabledCount += It->HealthComponent && It->HealthComponent->IsDisabled() ? 1 : 0;
+    }
+    for (TActorIterator<ATacticalUGVPawn> It(GetWorld()); It; ++It)
+    {
+        AddAgentDiagnostic(*It, It->AgentId);
+        BlueAliveCount += !It->HealthComponent || It->HealthComponent->IsAlive() ? 1 : 0;
+        BlueDisabledCount += It->HealthComponent && It->HealthComponent->IsDisabled() ? 1 : 0;
+    }
 
     int32 DuplicateAgentIds = 0;
     for (const TPair<FString, int32>& Pair : AgentIdCounts) DuplicateAgentIds += FMath::Max(0, Pair.Value - 1);
@@ -318,6 +364,8 @@ FString UTacticalPolicySubsystem::BuildResponse(bool bOk, const FString& Error) 
     Diagnostics->SetNumberField(TEXT("controller_count"), ControllerCounts.Num());
     Diagnostics->SetNumberField(TEXT("duplicate_controller_count"), DuplicateControllers);
     Diagnostics->SetNumberField(TEXT("unpossessed_agent_count"), UnpossessedAgentCount);
+    Diagnostics->SetNumberField(TEXT("blue_alive_count"), BlueAliveCount);
+    Diagnostics->SetNumberField(TEXT("blue_disabled_count"), BlueDisabledCount);
     Diagnostics->SetNumberField(TEXT("world_time_seconds"), GetWorld()->GetTimeSeconds());
     Diagnostics->SetNumberField(TEXT("process_memory_mb"), static_cast<double>(ProcessMemoryBytes) / (1024.0 * 1024.0));
     Root->SetObjectField(TEXT("diagnostics"), Diagnostics);

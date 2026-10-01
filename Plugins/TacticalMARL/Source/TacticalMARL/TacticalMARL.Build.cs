@@ -16,7 +16,9 @@ public class TacticalMARL : ModuleRules
             "JsonUtilities",
             "NavigationSystem",
             "Sockets",
-            "Networking"
+            "Networking",
+            "Slate",
+            "SlateCore"
         });
     }
 }

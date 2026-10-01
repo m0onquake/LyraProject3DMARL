@@ -183,7 +183,7 @@ bool ATacticalRedBotSpawnPoint::ResetBotForEpisode()
         SpawnedController = nullptr;
         SpawnConfiguredBot();
         const bool bReady = IsValid(SpawnedController) && IsValid(SpawnedController->GetPawn());
-        if (bReady) SetBotAwaitingEpisode(false);
+        if (bReady) SetBotAwaitingEpisode(bPassiveInDifficultyD0);
         return bReady;
     }
     APawn* Pawn = SpawnedController ? SpawnedController->GetPawn() : nullptr;
@@ -193,7 +193,7 @@ bool ATacticalRedBotSpawnPoint::ResetBotForEpisode()
         Pawn->SetActorTransform(GetActorTransform(), false, nullptr, ETeleportType::TeleportPhysics);
         CombatState->RestoreFullHealth();
         ConfigureSpawnedPawn(Pawn);
-        SetBotAwaitingEpisode(false);
+        SetBotAwaitingEpisode(bPassiveInDifficultyD0);
         return true;
     }
 
@@ -206,7 +206,7 @@ bool ATacticalRedBotSpawnPoint::ResetBotForEpisode()
     SpawnedController = nullptr;
     SpawnConfiguredBot();
     const bool bReady = IsValid(SpawnedController) && IsValid(SpawnedController->GetPawn());
-    if (bReady) SetBotAwaitingEpisode(false);
+    if (bReady) SetBotAwaitingEpisode(bPassiveInDifficultyD0);
     return bReady;
 }
 

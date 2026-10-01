@@ -2,6 +2,78 @@
 
 `ATacticalUAVPawn` is the first policy-controlled agent used by the MARL test range.
 
+## S0/D0 visible baseline
+
+`L_MARL_UrbanDepot` now starts with the S0 overlay enabled. It shows the
+Episode, fixed seed, mission phase, passive-red alert phase, 6-blue/5-red
+roster status, world-space Agent ID/side/role/task/health-state labels, the
+blue base, red defense zone and primary Anti-UAV objective. The automatic
+overview camera makes the complete deployment visible in Game and PIE.
+
+The layers are independently switchable at runtime:
+
+```text
+tacticalmarl.S0HUD 0|1
+tacticalmarl.S0Labels 0|1
+tacticalmarl.S0Zones 0|1
+tacticalmarl.S0OverviewCamera 0|1
+```
+
+Difficulty D0 keeps every red Lyra bot visible at its fixed spawn with its
+configured role/loadout, while its stock combat brain remains paused. This is
+the passive-red regression baseline; active red perception and fire belong to
+later stages.
+
+With the Game window running, validate the live v1 contract and exact roster:
+
+```powershell
+& 'E:\UE_5.3\Engine\Binaries\ThirdParty\Python3\Win64\python.exe' `
+  Python\s0_baseline_check.py --seed 42
+```
+
+For a repeatable visual acceptance run, add
+`-TacticalMARLS0AutoDemo -TacticalMARLS0Capture`. After Lyra warmup the game
+starts seed 42 and saves `Saved/TacticalMARL/Screenshots/S0_UrbanDepot_seed42.png`.
+
+## S1 blue health and disabled-state acceptance
+
+UAV and UGV Pawns share `UTacticalAgentHealthComponent`. Their observations
+now include `health`, `max_health`, `alive`, `disabled`, `status`,
+`last_damage_source`, `last_hit_direction`, `damage_event_count`, and an
+`action_mask`. A disabled agent rejects normal policy commands but its Pawn is
+retained for observations and trajectory logs. UAVs perform a controlled
+descent; UGVs stop and show a persistent smoke/damage indication. Episode
+reset restores health, task state, visuals, and the original transform.
+
+Run the dedicated visible demonstration with:
+
+```powershell
+& 'E:\UE_5.3\Engine\Binaries\Win64\UnrealEditor.exe' `
+  'E:\UEproject\LyraProject\LyraProject.uproject' `
+  '/Game/MARL/UrbanDepot/Maps/L_MARL_UrbanDepot' `
+  -game -log -windowed -ResX=1600 -ResY=900 `
+  -TacticalMARLS1AutoDemo -TacticalMARLS1Capture
+```
+
+After warmup it resets to seed 42, applies fixed test damage to
+`BLUE_UAV_01` and `BLUE_UGV_01`, and saves
+`Saved/TacticalMARL/Screenshots/S1_HealthAndDisable_seed42.png`. The fixed
+damage is an acceptance-only path and does not add an active red attack policy.
+
+For live automated S1 acceptance, launch the Game with
+`-TacticalMARLS1Test`, then run:
+
+```powershell
+& 'E:\UE_5.3\Engine\Binaries\ThirdParty\Python3\Win64\python.exe' `
+  Python\s1_health_check.py --seed 42 --resets 10
+```
+
+The test records before/after/reset observations in
+`Saved/TacticalMARL/Logs/s1_health_demo_seed42.jsonl` and writes the result to
+`Saved/TacticalMARL/Reports/s1_health_check.json`. The UDP
+`apply_test_damage` request is rejected unless the Game was explicitly started
+with `-TacticalMARLS1Test` or `-TacticalMARLS1AutoDemo`.
+
 ## Supported tasks
 
 - `idle`

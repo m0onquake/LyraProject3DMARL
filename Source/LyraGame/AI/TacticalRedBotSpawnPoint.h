@@ -68,6 +68,12 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactical Bot")
     bool bMissionObjective = false;
 
+    // S0/D0 regression baseline: bots keep their fixed deployment and visible
+    // loadout but their stock Lyra combat brain remains paused. Later defense
+    // stages can explicitly disable this flag when their rule controller is ready.
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactical Bot|Difficulty")
+    bool bPassiveInDifficultyD0 = true;
+
 protected:
     UFUNCTION()
     void HandleExperienceLoaded(const ULyraExperienceDefinition* Experience);

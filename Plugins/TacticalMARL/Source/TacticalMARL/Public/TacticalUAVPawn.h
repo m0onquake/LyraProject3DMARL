@@ -7,8 +7,12 @@
 
 class UCameraComponent;
 class UFloatingPawnMovement;
+class UMaterialInstanceDynamic;
+class UPointLightComponent;
 class USphereComponent;
 class UStaticMeshComponent;
+class UTacticalAgentHealthComponent;
+class UTextRenderComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FTacticalUAVTaskEvent, int32, SequenceId, ETacticalUAVTask, Task);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FTacticalUAVDetectionEvent, AActor*, DetectedActor, FVector, LastKnownLocation);
@@ -93,6 +97,9 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactical UAV|Strike", meta = (EditCondition = "bApplyStrikeDamage"))
     float StrikeDamage = 50.0f;
 
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tactical UAV|Health")
+    TObjectPtr<UTacticalAgentHealthComponent> HealthComponent;
+
     UPROPERTY(BlueprintAssignable, Category = "Tactical UAV|Events")
     FTacticalUAVTaskEvent OnTaskCompleted;
 
@@ -118,6 +125,12 @@ protected:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
     TObjectPtr<UFloatingPawnMovement> MovementComponent;
 
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+    TObjectPtr<UTextRenderComponent> DamageStatusText;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+    TObjectPtr<UPointLightComponent> DamageLight;
+
     UPROPERTY(ReplicatedUsing = OnRep_CurrentCommand, BlueprintReadOnly, Category = "Tactical UAV|Policy")
     FTacticalUAVPolicyCommand CurrentCommand;
 
@@ -126,6 +139,15 @@ protected:
 
     UFUNCTION()
     void OnRep_CurrentCommand();
+
+    UFUNCTION()
+    void HandleHealthChanged(UTacticalAgentHealthComponent* Component, float OldHealth, float NewHealth, AActor* DamageSource);
+
+    UFUNCTION()
+    void HandleDisabled(UTacticalAgentHealthComponent* Component, AActor* DamageSource);
+
+    UFUNCTION()
+    void HandleHealthReset(UTacticalAgentHealthComponent* Component);
 
 private:
     UFUNCTION(Server, Reliable)
@@ -137,6 +159,10 @@ private:
     void CompleteCurrentTask();
     void FailCurrentTask();
     void ExecuteStrike();
+    void ClearHitFeedback();
+    void ApplyVisualColor(const FLinearColor& Color);
+    void UpdateDisabledVisual(float DeltaSeconds);
+    bool IsOperational() const;
     void SetTaskState(ETacticalUAVTaskState NewState);
     static bool ParseTaskName(const FString& TaskName, ETacticalUAVTask& OutTask);
     static FString TaskToString(ETacticalUAVTask Task);
@@ -151,4 +177,7 @@ private:
     bool bContinuousControl = false;
     FVector ContinuousMoveInput = FVector::ZeroVector;
     float ContinuousYawRate = 0.0f;
+    float DisabledVisualTime = 0.0f;
+    FTimerHandle HitFeedbackTimer;
+    UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> AgentMaterial;
 };

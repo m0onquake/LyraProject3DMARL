@@ -6,7 +6,11 @@
 #include "TacticalUGVPawn.generated.h"
 
 class UBoxComponent;
+class UMaterialInstanceDynamic;
+class UPointLightComponent;
 class UStaticMeshComponent;
+class UTacticalAgentHealthComponent;
+class UTextRenderComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FTacticalUGVTaskEvent, int32, SequenceId, ETacticalUGVTask, Task);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FTacticalUGVDetectionEvent, AActor*, DetectedActor, FVector, LastKnownLocation);
@@ -56,6 +60,7 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Tactical UGV|Engage") float EngageRange = 1600.0f;
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Tactical UGV|Engage") bool bApplyEngageDamage = true;
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Tactical UGV|Engage", meta=(EditCondition="bApplyEngageDamage")) float EngageDamage = 35.0f;
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Tactical UGV|Health") TObjectPtr<UTacticalAgentHealthComponent> HealthComponent;
 
     UPROPERTY(BlueprintAssignable, Category="Tactical UGV|Events") FTacticalUGVTaskEvent OnTaskCompleted;
     UPROPERTY(BlueprintAssignable, Category="Tactical UGV|Events") FTacticalUGVTaskEvent OnTaskFailed;
@@ -66,10 +71,19 @@ protected:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components") TObjectPtr<UBoxComponent> CollisionComponent;
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components") TObjectPtr<UStaticMeshComponent> BodyMesh;
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components") TObjectPtr<UStaticMeshComponent> TurretMesh;
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components") TObjectPtr<UTextRenderComponent> DamageStatusText;
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components") TObjectPtr<UPointLightComponent> DamageLight;
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components") TObjectPtr<UStaticMeshComponent> SmokePuff1;
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components") TObjectPtr<UStaticMeshComponent> SmokePuff2;
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components") TObjectPtr<UStaticMeshComponent> SmokePuff3;
     UPROPERTY(Replicated, BlueprintReadOnly, Category="Tactical UGV|Policy") FTacticalUGVPolicyCommand CurrentCommand;
     UPROPERTY(Replicated, BlueprintReadOnly, Category="Tactical UGV|Policy") ETacticalUGVTaskState TaskState = ETacticalUGVTaskState::Idle;
 
 private:
+    UFUNCTION() void HandleHealthChanged(UTacticalAgentHealthComponent* Component, float OldHealth, float NewHealth, AActor* DamageSource);
+    UFUNCTION() void HandleDisabled(UTacticalAgentHealthComponent* Component, AActor* DamageSource);
+    UFUNCTION() void HandleHealthReset(UTacticalAgentHealthComponent* Component);
+
     FVector ResolveTargetLocation() const;
     void ExecuteHighLevelTask(float DeltaSeconds);
     bool DriveTowards(const FVector& Destination, float AcceptanceRadius, float DeltaSeconds);
@@ -81,6 +95,10 @@ private:
     void ApplyDrive(float Throttle, float Steering, bool bBrake, float DeltaSeconds);
     void CompleteTask();
     void ExecuteEngage();
+    void ClearHitFeedback();
+    void ApplyVisualColor(const FLinearColor& Color);
+    void UpdateDisabledVisual(float DeltaSeconds);
+    bool IsOperational() const;
     static bool ParseTaskName(const FString& Name, ETacticalUGVTask& OutTask);
     static FString TaskToString(ETacticalUGVTask Task);
     static FString StateToString(ETacticalUGVTaskState State);
@@ -116,4 +134,8 @@ private:
     float GoalProgressElapsed = 0.0f;
     float LastGoalDistance = -1.0f;
     int32 RecoveryTurnCount = 0;
+    float DisabledVisualTime = 0.0f;
+    FTimerHandle HitFeedbackTimer;
+    UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> AgentMaterial;
+    UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> SmokeMaterial;
 };

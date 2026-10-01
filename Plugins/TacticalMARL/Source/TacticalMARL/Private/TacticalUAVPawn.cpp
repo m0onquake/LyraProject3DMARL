@@ -1,19 +1,25 @@
 #include "TacticalUAVPawn.h"
+#include "TacticalAgentHealthComponent.h"
 #include "TacticalMARLMissionSubsystem.h"
 
 #include "Camera/CameraComponent.h"
+#include "Components/PointLightComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/TextRenderComponent.h"
 #include "Engine/OverlapResult.h"
 #include "Engine/StaticMesh.h"
 #include "GameFramework/FloatingPawnMovement.h"
 #include "JsonObjectConverter.h"
 #include "Kismet/GameplayStatics.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
 #include "Net/UnrealNetwork.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "UObject/ConstructorHelpers.h"
+#include "TimerManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogTacticalUAV, Log, All);
 
@@ -84,6 +90,24 @@ ATacticalUAVPawn::ATacticalUAVPawn()
     MovementComponent->Deceleration = 3200.0f;
     MovementComponent->TurningBoost = 8.0f;
 
+    HealthComponent = CreateDefaultSubobject<UTacticalAgentHealthComponent>(TEXT("AgentHealth"));
+
+    DamageStatusText = CreateDefaultSubobject<UTextRenderComponent>(TEXT("DamageStatus"));
+    DamageStatusText->SetupAttachment(RootComponent);
+    DamageStatusText->SetRelativeLocation(FVector(0.0f, 0.0f, 310.0f));
+    DamageStatusText->SetHorizontalAlignment(EHorizTextAligment::EHTA_Center);
+    DamageStatusText->SetTextRenderColor(FColor::Red);
+    DamageStatusText->SetWorldSize(52.0f);
+    DamageStatusText->SetVisibility(false);
+    DamageStatusText->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+    DamageLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("DamageLight"));
+    DamageLight->SetupAttachment(RootComponent);
+    DamageLight->SetRelativeLocation(FVector(0.0f, 0.0f, 80.0f));
+    DamageLight->SetLightColor(FLinearColor(1.0f, 0.02f, 0.0f));
+    DamageLight->SetAttenuationRadius(900.0f);
+    DamageLight->SetIntensity(0.0f);
+
     Tags.Add(TEXT("MARL.Agent"));
     Tags.Add(TEXT("MARL.Blue"));
     Tags.Add(TEXT("MARL.UAV"));
@@ -92,6 +116,24 @@ ATacticalUAVPawn::ATacticalUAVPawn()
 void ATacticalUAVPawn::BeginPlay()
 {
     Super::BeginPlay();
+    if (HealthComponent)
+    {
+        HealthComponent->OnHealthChanged.AddDynamic(this, &ThisClass::HandleHealthChanged);
+        HealthComponent->OnDisabled.AddDynamic(this, &ThisClass::HandleDisabled);
+        HealthComponent->OnHealthReset.AddDynamic(this, &ThisClass::HandleHealthReset);
+    }
+    if (UMaterialInterface* BasicMaterial = LoadObject<UMaterialInterface>(
+        nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial")))
+    {
+        AgentMaterial = UMaterialInstanceDynamic::Create(BasicMaterial, this);
+        TInlineComponentArray<UStaticMeshComponent*> Visuals;
+        GetComponents(Visuals);
+        for (UStaticMeshComponent* Visual : Visuals)
+        {
+            if (Visual) Visual->SetMaterial(0, AgentMaterial);
+        }
+        ApplyVisualColor(FLinearColor(0.02f, 0.18f, 0.75f));
+    }
     HomeLocation = GetActorLocation();
     UE_LOG(LogTacticalUAV, Log, TEXT("%s (%s) ready at %s"), *GetName(), *AgentId.ToString(), *HomeLocation.ToCompactString());
     if (HasAuthority() && bAutoStartInitialCommand)
@@ -103,6 +145,12 @@ void ATacticalUAVPawn::BeginPlay()
 void ATacticalUAVPawn::Tick(const float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
+
+    if (!IsOperational())
+    {
+        UpdateDisabledVisual(DeltaSeconds);
+        return;
+    }
 
     if (!HasAuthority())
     {
@@ -140,6 +188,7 @@ void ATacticalUAVPawn::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 
 bool ATacticalUAVPawn::ReceivePolicyCommand(const FTacticalUAVPolicyCommand& Command)
 {
+    if (!IsOperational()) return false;
     if (!HasAuthority())
     {
         ServerReceivePolicyCommand(Command);
@@ -211,7 +260,7 @@ bool ATacticalUAVPawn::SubmitDiscreteAction(const int32 Action, const FVector& T
 
 bool ATacticalUAVPawn::SubmitContinuousAction(const FVector& MoveInput, const float YawRate, const int32 SequenceId)
 {
-    if (!HasAuthority())
+    if (!HasAuthority() || !IsOperational())
     {
         return false;
     }
@@ -228,6 +277,11 @@ bool ATacticalUAVPawn::SubmitContinuousAction(const FVector& MoveInput, const fl
 
 bool ATacticalUAVPawn::ReceivePolicyJson(const FString& JsonCommand, FString& OutError)
 {
+    if (!IsOperational())
+    {
+        OutError = TEXT("agent_disabled");
+        return false;
+    }
     TSharedPtr<FJsonObject> Root;
     const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonCommand);
     if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
@@ -302,6 +356,9 @@ void ATacticalUAVPawn::ResetForEpisode(const FTransform& SpawnTransform)
     SensorAccumulator = 0.0f;
     OrbitAngleRadians = 0.0f;
     DetectedActors.Reset();
+    DisabledVisualTime = 0.0f;
+    if (HealthComponent) HealthComponent->ResetHealth();
+    ClearHitFeedback();
     ForceNetUpdate();
 }
 
@@ -354,6 +411,27 @@ FString ATacticalUAVPawn::GetTelemetryJson() const
     }
     Root->SetArrayField(TEXT("detected_targets"), Targets);
     Root->SetNumberField(TEXT("detected_target_count"), Telemetry.DetectedTargetCount);
+    const FTacticalAgentHealthState HealthState = HealthComponent
+        ? HealthComponent->GetHealthState()
+        : FTacticalAgentHealthState();
+    Root->SetNumberField(TEXT("health"), HealthState.Health);
+    Root->SetNumberField(TEXT("max_health"), HealthState.MaxHealth);
+    Root->SetBoolField(TEXT("alive"), HealthState.bAlive);
+    Root->SetBoolField(TEXT("disabled"), HealthState.bDisabled);
+    Root->SetStringField(TEXT("status"), HealthState.bDisabled ? TEXT("disabled") : TEXT("active"));
+    Root->SetStringField(TEXT("last_damage_source"), HealthState.LastDamageSourceAgentId.ToString());
+    Root->SetNumberField(TEXT("damage_event_count"), HealthState.DamageEventCount);
+    Root->SetArrayField(TEXT("last_hit_direction"), {
+        MakeShared<FJsonValueNumber>(HealthState.LastHitDirection.X),
+        MakeShared<FJsonValueNumber>(HealthState.LastHitDirection.Y),
+        MakeShared<FJsonValueNumber>(HealthState.LastHitDirection.Z)});
+    TSharedRef<FJsonObject> ActionMask = MakeShared<FJsonObject>();
+    const bool bCanAct = !HealthState.bDisabled;
+    for (const TCHAR* Action : {TEXT("idle"), TEXT("move"), TEXT("recon"), TEXT("surveillance"), TEXT("strike"), TEXT("rtb")})
+    {
+        ActionMask->SetBoolField(Action, bCanAct);
+    }
+    Root->SetObjectField(TEXT("action_mask"), ActionMask);
 
     FString Result;
     const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Result);
@@ -571,6 +649,81 @@ void ATacticalUAVPawn::ExecuteStrike()
 void ATacticalUAVPawn::SetTaskState(const ETacticalUAVTaskState NewState)
 {
     TaskState = NewState;
+}
+
+void ATacticalUAVPawn::HandleHealthChanged(
+    UTacticalAgentHealthComponent*,
+    const float OldHealth,
+    const float NewHealth,
+    AActor*)
+{
+    if (NewHealth >= OldHealth || !DamageStatusText || !DamageLight) return;
+    ApplyVisualColor(FLinearColor(1.0f, 0.03f, 0.0f));
+    DamageStatusText->SetText(FText::FromString(FString::Printf(TEXT("HIT -%.0f\nHP %.0f/%.0f"),
+        OldHealth - NewHealth, NewHealth, HealthComponent ? HealthComponent->GetMaxHealth() : 100.0f)));
+    DamageStatusText->SetVisibility(true);
+    DamageLight->SetIntensity(18000.0f);
+    GetWorldTimerManager().ClearTimer(HitFeedbackTimer);
+    GetWorldTimerManager().SetTimer(HitFeedbackTimer, this, &ThisClass::ClearHitFeedback, 0.80f, false);
+}
+
+void ATacticalUAVPawn::HandleDisabled(UTacticalAgentHealthComponent*, AActor*)
+{
+    bContinuousControl = false;
+    ContinuousMoveInput = FVector::ZeroVector;
+    ContinuousYawRate = 0.0f;
+    MovementComponent->StopMovementImmediately();
+    CurrentCommand.Task = ETacticalUAVTask::Idle;
+    TaskState = ETacticalUAVTaskState::Failed;
+    DisabledVisualTime = 0.0f;
+    ApplyVisualColor(FLinearColor(0.12f, 0.015f, 0.01f));
+    DamageStatusText->SetText(FText::FromString(TEXT("DISABLED\nCONTROLLED DESCENT")));
+    DamageStatusText->SetTextRenderColor(FColor(255, 70, 20));
+    DamageStatusText->SetVisibility(true);
+    DamageLight->SetIntensity(6500.0f);
+    GetWorldTimerManager().ClearTimer(HitFeedbackTimer);
+}
+
+void ATacticalUAVPawn::HandleHealthReset(UTacticalAgentHealthComponent*)
+{
+    ClearHitFeedback();
+    DisabledVisualTime = 0.0f;
+}
+
+void ATacticalUAVPawn::ClearHitFeedback()
+{
+    if (DamageStatusText)
+    {
+        DamageStatusText->SetVisibility(false);
+        DamageStatusText->SetTextRenderColor(FColor::Red);
+    }
+    if (DamageLight) DamageLight->SetIntensity(0.0f);
+    ApplyVisualColor(FLinearColor(0.02f, 0.18f, 0.75f));
+}
+
+void ATacticalUAVPawn::ApplyVisualColor(const FLinearColor& Color)
+{
+    if (AgentMaterial) AgentMaterial->SetVectorParameterValue(TEXT("Color"), Color);
+}
+
+void ATacticalUAVPawn::UpdateDisabledVisual(const float DeltaSeconds)
+{
+    if (!HasAuthority()) return;
+    DisabledVisualTime += DeltaSeconds;
+    MovementComponent->StopMovementImmediately();
+    FHitResult Hit;
+    AddActorWorldOffset(FVector(0.0f, 0.0f, -180.0f * DeltaSeconds), true, &Hit);
+    const FRotator TargetRotation(-18.0f, GetActorRotation().Yaw, 38.0f);
+    SetActorRotation(FMath::RInterpTo(GetActorRotation(), TargetRotation, DeltaSeconds, 1.8f));
+    if (DamageLight)
+    {
+        DamageLight->SetIntensity(4500.0f + FMath::Sin(DisabledVisualTime * 8.0f) * 1800.0f);
+    }
+}
+
+bool ATacticalUAVPawn::IsOperational() const
+{
+    return !HealthComponent || !HealthComponent->IsDisabled();
 }
 
 bool ATacticalUAVPawn::ParseTaskName(const FString& TaskName, ETacticalUAVTask& OutTask)

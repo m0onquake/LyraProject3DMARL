@@ -1,18 +1,24 @@
 #include "TacticalUGVPawn.h"
+#include "TacticalAgentHealthComponent.h"
 #include "TacticalMARLMissionSubsystem.h"
 
 #include "Components/BoxComponent.h"
+#include "Components/PointLightComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/TextRenderComponent.h"
 #include "Engine/OverlapResult.h"
 #include "Engine/StaticMesh.h"
 #include "EngineUtils.h"
 #include "JsonObjectConverter.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
 #include "Net/UnrealNetwork.h"
 #include "NavigationPath.h"
 #include "NavigationSystem.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
+#include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogTacticalUGV, Log, All);
@@ -67,6 +73,40 @@ ATacticalUGVPawn::ATacticalUGVPawn()
         if (Cylinder.Succeeded()) Wheel->SetStaticMesh(Cylinder.Object);
     }
 
+    HealthComponent = CreateDefaultSubobject<UTacticalAgentHealthComponent>(TEXT("Health"));
+
+    DamageStatusText = CreateDefaultSubobject<UTextRenderComponent>(TEXT("DamageStatusText"));
+    DamageStatusText->SetupAttachment(RootComponent);
+    DamageStatusText->SetRelativeLocation(FVector(0.0f, 0.0f, 185.0f));
+    DamageStatusText->SetHorizontalAlignment(EHorizTextAligment::EHTA_Center);
+    DamageStatusText->SetWorldSize(58.0f);
+    DamageStatusText->SetTextRenderColor(FColor::Orange);
+    DamageStatusText->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    DamageStatusText->SetHiddenInGame(true);
+
+    DamageLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("DamageLight"));
+    DamageLight->SetupAttachment(RootComponent);
+    DamageLight->SetRelativeLocation(FVector(0.0f, 0.0f, 100.0f));
+    DamageLight->SetLightColor(FLinearColor::Red);
+    DamageLight->SetAttenuationRadius(650.0f);
+    DamageLight->SetIntensity(0.0f);
+
+    UStaticMeshComponent* SmokePuffs[] = {
+        SmokePuff1 = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("SmokePuff1")),
+        SmokePuff2 = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("SmokePuff2")),
+        SmokePuff3 = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("SmokePuff3"))
+    };
+    for (int32 Index = 0; Index < UE_ARRAY_COUNT(SmokePuffs); ++Index)
+    {
+        UStaticMeshComponent* SmokePuff = SmokePuffs[Index];
+        SmokePuff->SetupAttachment(RootComponent);
+        SmokePuff->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+        SmokePuff->SetRelativeLocation(FVector(-35.0f, 0.0f, 125.0f + Index * 70.0f));
+        SmokePuff->SetRelativeScale3D(FVector(0.28f + Index * 0.08f));
+        SmokePuff->SetHiddenInGame(true);
+        if (Cube.Succeeded()) SmokePuff->SetStaticMesh(Cube.Object);
+    }
+
     Tags.Add(TEXT("MARL.Agent"));
     Tags.Add(TEXT("MARL.Blue"));
     Tags.Add(TEXT("MARL.UGV"));
@@ -75,6 +115,25 @@ ATacticalUGVPawn::ATacticalUGVPawn()
 void ATacticalUGVPawn::BeginPlay()
 {
     Super::BeginPlay();
+    if (HealthComponent)
+    {
+        HealthComponent->OnHealthChanged.AddDynamic(this, &ATacticalUGVPawn::HandleHealthChanged);
+        HealthComponent->OnDisabled.AddDynamic(this, &ATacticalUGVPawn::HandleDisabled);
+        HealthComponent->OnHealthReset.AddDynamic(this, &ATacticalUGVPawn::HandleHealthReset);
+    }
+    if (UMaterialInterface* BaseMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial")))
+    {
+        AgentMaterial = UMaterialInstanceDynamic::Create(BaseMaterial, this);
+        SmokeMaterial = UMaterialInstanceDynamic::Create(BaseMaterial, this);
+        ApplyVisualColor(FLinearColor(0.02f, 0.16f, 0.85f));
+        SmokeMaterial->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.035f, 0.035f, 0.035f));
+        TInlineComponentArray<UStaticMeshComponent*> Meshes(this);
+        for (UStaticMeshComponent* Mesh : Meshes)
+        {
+            const bool bSmoke = Mesh == SmokePuff1 || Mesh == SmokePuff2 || Mesh == SmokePuff3;
+            Mesh->SetMaterial(0, bSmoke ? SmokeMaterial : AgentMaterial);
+        }
+    }
     HomeLocation = GetActorLocation();
     LastLocation = HomeLocation;
     ProgressSampleLocation = HomeLocation;
@@ -88,6 +147,11 @@ void ATacticalUGVPawn::Tick(float DeltaSeconds)
     CurrentVelocity = DeltaSeconds > SMALL_NUMBER ? (GetActorLocation() - LastLocation) / DeltaSeconds : FVector::ZeroVector;
     LastLocation = GetActorLocation();
     if (!HasAuthority()) return;
+    if (!IsOperational())
+    {
+        UpdateDisabledVisual(DeltaSeconds);
+        return;
+    }
 
     TaskElapsedSeconds += DeltaSeconds;
     SensorAccumulator += DeltaSeconds;
@@ -108,6 +172,7 @@ void ATacticalUGVPawn::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 bool ATacticalUGVPawn::ReceivePolicyCommand(const FTacticalUGVPolicyCommand& Command)
 {
     if (!HasAuthority()) return false;
+    if (!IsOperational()) return false;
     if (Command.SequenceId > 0 && CurrentCommand.SequenceId > Command.SequenceId) return false;
     CurrentCommand = Command;
     CurrentCommand.MaxSpeed = FMath::Max(50.0f, Command.MaxSpeed);
@@ -145,6 +210,7 @@ bool ATacticalUGVPawn::SubmitDiscreteAction(int32 Action, const FVector& Target,
 bool ATacticalUGVPawn::SubmitContinuousAction(float Throttle, float Steering, bool bBrake, int32 SequenceId)
 {
     if (!HasAuthority()) return false;
+    if (!IsOperational()) return false;
     CurrentCommand.SequenceId = SequenceId;
     CurrentCommand.Task = ETacticalUGVTask::Idle;
     ContinuousThrottle = FMath::Clamp(Throttle, -1.0f, 1.0f);
@@ -157,6 +223,11 @@ bool ATacticalUGVPawn::SubmitContinuousAction(float Throttle, float Steering, bo
 
 bool ATacticalUGVPawn::ReceivePolicyJson(const FString& Json, FString& OutError)
 {
+    if (!IsOperational())
+    {
+        OutError = TEXT("agent_disabled");
+        return false;
+    }
     TSharedPtr<FJsonObject> Root;
     if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Root) || !Root.IsValid())
     {
@@ -228,6 +299,13 @@ void ATacticalUGVPawn::ResetForEpisode(const FTransform& SpawnTransform)
     DetectedActors.Reset();
     ResetNavigationState();
     ProgressSampleLocation = HomeLocation;
+    DisabledVisualTime = 0.0f;
+    if (HealthComponent) HealthComponent->ResetHealth();
+    ClearHitFeedback();
+    TurretMesh->SetRelativeRotation(FRotator::ZeroRotator);
+    if (SmokePuff1) SmokePuff1->SetHiddenInGame(true);
+    if (SmokePuff2) SmokePuff2->SetHiddenInGame(true);
+    if (SmokePuff3) SmokePuff3->SetHiddenInGame(true);
     ForceNetUpdate();
 }
 
@@ -265,6 +343,27 @@ FString ATacticalUGVPawn::GetTelemetryJson() const
     Root->SetBoolField(TEXT("yielding_to_vehicle"), bYieldingToVehicle);
     Root->SetNumberField(TEXT("static_avoidance_steering"), StaticAvoidanceSteering);
     Root->SetNumberField(TEXT("recovery_turn_count"), RecoveryTurnCount);
+    const FTacticalAgentHealthState HealthState = HealthComponent
+        ? HealthComponent->GetHealthState()
+        : FTacticalAgentHealthState();
+    Root->SetNumberField(TEXT("health"), HealthState.Health);
+    Root->SetNumberField(TEXT("max_health"), HealthState.MaxHealth);
+    Root->SetBoolField(TEXT("alive"), HealthState.bAlive);
+    Root->SetBoolField(TEXT("disabled"), HealthState.bDisabled);
+    Root->SetStringField(TEXT("status"), HealthState.bDisabled ? TEXT("disabled") : TEXT("active"));
+    Root->SetStringField(TEXT("last_damage_source"), HealthState.LastDamageSourceAgentId.ToString());
+    Root->SetNumberField(TEXT("damage_event_count"), HealthState.DamageEventCount);
+    Root->SetArrayField(TEXT("last_hit_direction"), {
+        MakeShared<FJsonValueNumber>(HealthState.LastHitDirection.X),
+        MakeShared<FJsonValueNumber>(HealthState.LastHitDirection.Y),
+        MakeShared<FJsonValueNumber>(HealthState.LastHitDirection.Z)});
+    TSharedRef<FJsonObject> ActionMask = MakeShared<FJsonObject>();
+    const bool bCanAct = !HealthState.bDisabled;
+    for (const TCHAR* Action : {TEXT("idle"), TEXT("move"), TEXT("patrol"), TEXT("recon"), TEXT("surveillance"), TEXT("engage"), TEXT("rtb")})
+    {
+        ActionMask->SetBoolField(Action, bCanAct);
+    }
+    Root->SetObjectField(TEXT("action_mask"), ActionMask);
     FString Result; FJsonSerializer::Serialize(Root, TJsonWriterFactory<>::Create(&Result)); return Result;
 }
 
@@ -633,6 +732,86 @@ void ATacticalUGVPawn::ExecuteEngage()
         Mission->ReportEngagement(AgentId, this, CurrentCommand.TargetActor, Location, EngageDamage, bApplyEngageDamage);
     }
     UE_LOG(LogTacticalUGV, Log, TEXT("%s simulated engage at %s"), *AgentId.ToString(), *Location.ToCompactString());
+}
+
+void ATacticalUGVPawn::HandleHealthChanged(UTacticalAgentHealthComponent* Component, float OldHealth, float NewHealth, AActor* DamageSource)
+{
+    if (!Component || NewHealth >= OldHealth || Component->IsDisabled()) return;
+    DamageStatusText->SetText(FText::FromString(FString::Printf(TEXT("HIT -%.0f  |  HP %.0f/%.0f"), OldHealth - NewHealth, NewHealth, Component->MaxHealth)));
+    DamageStatusText->SetTextRenderColor(FColor::Orange);
+    DamageStatusText->SetHiddenInGame(false);
+    DamageLight->SetIntensity(16000.0f);
+    ApplyVisualColor(FLinearColor(1.0f, 0.08f, 0.01f));
+    GetWorldTimerManager().ClearTimer(HitFeedbackTimer);
+    GetWorldTimerManager().SetTimer(HitFeedbackTimer, this, &ATacticalUGVPawn::ClearHitFeedback, 0.8f, false);
+}
+
+void ATacticalUGVPawn::HandleDisabled(UTacticalAgentHealthComponent* Component, AActor* DamageSource)
+{
+    bContinuousControl = false;
+    CurrentSpeed = 0.0f;
+    CurrentVelocity = FVector::ZeroVector;
+    CurrentCommand.Task = ETacticalUGVTask::Idle;
+    TaskState = ETacticalUGVTaskState::Failed;
+    DisabledVisualTime = 0.0f;
+    GetWorldTimerManager().ClearTimer(HitFeedbackTimer);
+    DamageStatusText->SetText(FText::FromString(TEXT("DISABLED  |  PARKED / SMOKE")));
+    DamageStatusText->SetTextRenderColor(FColor::Red);
+    DamageStatusText->SetHiddenInGame(false);
+    DamageLight->SetIntensity(9000.0f);
+    ApplyVisualColor(FLinearColor(0.12f, 0.015f, 0.01f));
+    TurretMesh->SetRelativeRotation(FRotator(0.0f, 25.0f, 12.0f));
+    OnTaskFailed.Broadcast(CurrentCommand.SequenceId, CurrentCommand.Task);
+    ForceNetUpdate();
+}
+
+void ATacticalUGVPawn::HandleHealthReset(UTacticalAgentHealthComponent* Component)
+{
+    DisabledVisualTime = 0.0f;
+    ClearHitFeedback();
+    TurretMesh->SetRelativeRotation(FRotator::ZeroRotator);
+    if (SmokePuff1) SmokePuff1->SetHiddenInGame(true);
+    if (SmokePuff2) SmokePuff2->SetHiddenInGame(true);
+    if (SmokePuff3) SmokePuff3->SetHiddenInGame(true);
+}
+
+void ATacticalUGVPawn::ClearHitFeedback()
+{
+    if (!HealthComponent || !HealthComponent->IsDisabled())
+    {
+        if (DamageStatusText) DamageStatusText->SetHiddenInGame(true);
+        if (DamageLight) DamageLight->SetIntensity(0.0f);
+        ApplyVisualColor(FLinearColor(0.02f, 0.16f, 0.85f));
+    }
+}
+
+void ATacticalUGVPawn::ApplyVisualColor(const FLinearColor& Color)
+{
+    if (AgentMaterial) AgentMaterial->SetVectorParameterValue(TEXT("Color"), Color);
+}
+
+void ATacticalUGVPawn::UpdateDisabledVisual(float DeltaSeconds)
+{
+    CurrentSpeed = 0.0f;
+    CurrentVelocity = FVector::ZeroVector;
+    DisabledVisualTime += DeltaSeconds;
+    DamageLight->SetIntensity(6500.0f + 2500.0f * (0.5f + 0.5f * FMath::Sin(DisabledVisualTime * 5.0f)));
+    UStaticMeshComponent* SmokePuffs[] = {SmokePuff1, SmokePuff2, SmokePuff3};
+    for (int32 Index = 0; Index < UE_ARRAY_COUNT(SmokePuffs); ++Index)
+    {
+        UStaticMeshComponent* SmokePuff = SmokePuffs[Index];
+        if (!SmokePuff) continue;
+        SmokePuff->SetHiddenInGame(false);
+        const float Phase = DisabledVisualTime * (0.8f + Index * 0.17f) + Index * 1.8f;
+        const float Scale = 0.25f + Index * 0.08f + 0.07f * (0.5f + 0.5f * FMath::Sin(Phase));
+        SmokePuff->SetRelativeScale3D(FVector(Scale));
+        SmokePuff->SetRelativeLocation(FVector(-35.0f + FMath::Sin(Phase) * 22.0f, FMath::Cos(Phase * 0.7f) * 18.0f, 125.0f + Index * 70.0f));
+    }
+}
+
+bool ATacticalUGVPawn::IsOperational() const
+{
+    return !HealthComponent || !HealthComponent->IsDisabled();
 }
 
 bool ATacticalUGVPawn::ParseTaskName(const FString& Name, ETacticalUGVTask& Out)
