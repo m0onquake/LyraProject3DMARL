@@ -22,7 +22,7 @@ namespace
 {
 TAutoConsoleVariable<int32> CVarTacticalMARLDifficulty(
     TEXT("tacticalmarl.Difficulty"), 0,
-    TEXT("TacticalMARL difficulty: 0 passive, 1 local red sensing/shared alert."), ECVF_Default);
+    TEXT("TacticalMARL difficulty: 0 passive, 1 local sensing/shared alert, 2 Anti-UAV attack."), ECVF_Default);
 
 constexpr float SuspiciousThreshold = 0.15f;
 constexpr float AlertedThreshold = 0.42f;
@@ -57,7 +57,17 @@ bool UTacticalThreatSubsystem::IsThreatSensingEnabled() const
 {
     return CVarTacticalMARLDifficulty.GetValueOnGameThread() >= 1 ||
         FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS2AutoDemo")) ||
-        FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS2Test"));
+        FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS2Test")) ||
+        FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS3AutoDemo")) ||
+        FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS3Test"));
+}
+
+const FTacticalThreatSensorState* UTacticalThreatSubsystem::FindSensorState(const FName SensorAgentId) const
+{
+    return Sensors.FindByPredicate([SensorAgentId](const FTacticalThreatSensorState& Sensor)
+    {
+        return Sensor.SensorAgentId == SensorAgentId;
+    });
 }
 
 void UTacticalThreatSubsystem::Tick(const float DeltaTime)
@@ -165,6 +175,7 @@ void UTacticalThreatSubsystem::UpdateSensor(FTacticalThreatSensorState& Sensor, 
 {
     AActor* SensorActor = Sensor.SensorActor.Get();
     if (!SensorActor) return;
+    Sensor.DirectContacts.Reset();
     const FVector Eye = SensorActor->GetActorLocation() + FVector(0.0f, 0.0f, 110.0f);
     const FVector Forward = SensorActor->GetActorForwardVector().GetSafeNormal();
     const float MinDot = FMath::Cos(FMath::DegreesToRadians(Sensor.FieldOfViewDegrees * 0.5f));
@@ -212,6 +223,18 @@ void UTacticalThreatSubsystem::UpdateSensor(FTacticalThreatSensorState& Sensor, 
         const float DistanceQuality = 1.0f - Distance / Sensor.SensorRange;
         const float AngleQuality = (FacingDot - MinDot) / FMath::Max(0.01f, 1.0f - MinDot);
         const float Measurement = FMath::Clamp(0.20f + DistanceQuality * 0.45f + AngleQuality * 0.35f, 0.05f, 1.0f);
+        FTacticalPerceivedContact Contact;
+        Contact.TargetAgentId = ResolveBlueAgentId(Candidate);
+        Contact.TargetType = ResolveBlueTargetType(Candidate);
+        Contact.ObservedLocation = Candidate->GetActorLocation();
+        Contact.ObservedVelocity = Candidate->GetVelocity();
+        Contact.Distance = Distance;
+        Contact.MeasurementQuality = Measurement;
+        Contact.ObservedWorldSeconds = GetWorld()->GetTimeSeconds();
+        Contact.TargetActor = Candidate;
+        if (const ATacticalUAVPawn* UAV = Cast<ATacticalUAVPawn>(Candidate)) Contact.ObservedRole = UAV->AssignedRole;
+        else if (const ATacticalUGVPawn* UGV = Cast<ATacticalUGVPawn>(Candidate)) Contact.ObservedRole = UGV->AssignedRole;
+        Sensor.DirectContacts.Add(Contact);
         if (!BestTarget || Measurement > BestMeasurement)
         {
             BestTarget = Candidate;
@@ -220,6 +243,10 @@ void UTacticalThreatSubsystem::UpdateSensor(FTacticalThreatSensorState& Sensor, 
     }
 
     Sensor.bLastTraceBlocked = bSawBlockedTrace;
+    Sensor.DirectContacts.Sort([](const FTacticalPerceivedContact& Left, const FTacticalPerceivedContact& Right)
+    {
+        return Left.TargetAgentId.LexicalLess(Right.TargetAgentId);
+    });
     if (bSawBlockedTrace) Sensor.LastTraceEnd = BlockedTraceEnd;
     if (BestTarget)
     {
@@ -454,7 +481,9 @@ void UTacticalThreatSubsystem::AppendThreatFields(const TSharedRef<FJsonObject>&
 bool UTacticalThreatSubsystem::SetAcceptanceStage(const FString& Stage, FString& OutError)
 {
     const bool bTestEnabled = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS2Test")) ||
-        FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS2AutoDemo"));
+        FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS2AutoDemo")) ||
+        FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS3Test")) ||
+        FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS3AutoDemo"));
     if (!bTestEnabled)
     {
         OutError = TEXT("s2_test_stage_disabled");

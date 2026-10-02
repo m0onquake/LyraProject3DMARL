@@ -7,6 +7,26 @@
 class AActor;
 class FJsonObject;
 
+/** A contact produced by one red sensor after range, FOV and LOS all pass. */
+USTRUCT(BlueprintType)
+struct TACTICALMARL_API FTacticalPerceivedContact
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category="Tactical MARL|Threat") FName TargetAgentId = NAME_None;
+    UPROPERTY(BlueprintReadOnly, Category="Tactical MARL|Threat") FName TargetType = NAME_None;
+    UPROPERTY(BlueprintReadOnly, Category="Tactical MARL|Threat") FName ObservedRole = NAME_None;
+    UPROPERTY(BlueprintReadOnly, Category="Tactical MARL|Threat") FVector ObservedLocation = FVector::ZeroVector;
+    UPROPERTY(BlueprintReadOnly, Category="Tactical MARL|Threat") FVector ObservedVelocity = FVector::ZeroVector;
+    UPROPERTY(BlueprintReadOnly, Category="Tactical MARL|Threat") float Distance = 0.0f;
+    UPROPERTY(BlueprintReadOnly, Category="Tactical MARL|Threat") float MeasurementQuality = 0.0f;
+    UPROPERTY(BlueprintReadOnly, Category="Tactical MARL|Threat") float ObservedWorldSeconds = -1.0f;
+
+    // Runtime-only handle. It is populated only for a direct visible contact
+    // and is never serialized into decentralized observations.
+    TWeakObjectPtr<AActor> TargetActor;
+};
+
 UENUM(BlueprintType)
 enum class ETacticalRedAlertState : uint8
 {
@@ -36,6 +56,8 @@ struct TACTICALMARL_API FTacticalThreatSensorState
     UPROPERTY(BlueprintReadOnly, Category="Tactical MARL|Threat") float SensorRange = 0.0f;
     UPROPERTY(BlueprintReadOnly, Category="Tactical MARL|Threat") float FieldOfViewDegrees = 0.0f;
     UPROPERTY(BlueprintReadOnly, Category="Tactical MARL|Threat") int32 BlockedTraceCount = 0;
+
+    TArray<FTacticalPerceivedContact> DirectContacts;
 
     TWeakObjectPtr<AActor> SensorActor;
     FVector LastTraceEnd = FVector::ZeroVector;
@@ -83,6 +105,7 @@ public:
     FTacticalSharedAlertState GetSharedAlertState() const { return SharedAlert; }
 
     const TArray<FTacticalThreatSensorState>& GetSensorStates() const { return Sensors; }
+    const FTacticalThreatSensorState* FindSensorState(FName SensorAgentId) const;
     const TArray<FString>& GetEventSequence() const { return EventSequence; }
     const FString& GetAcceptanceStage() const { return AcceptanceStage; }
 

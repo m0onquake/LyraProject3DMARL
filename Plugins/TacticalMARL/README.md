@@ -121,6 +121,53 @@ snapshots are recorded in `Saved/TacticalMARL/Logs/s2_threat_seed42.jsonl`.
 The `s2_test_stage` UDP request is rejected unless the Game was explicitly
 started with `-TacticalMARLS2Test` or `-TacticalMARLS2AutoDemo`.
 
+## S3 D2 Anti-UAV launcher acceptance
+
+`UTacticalAirDefenseSubsystem` consumes only the direct UAV contacts produced
+by `RED_ANTIUAV_01`'s S2 sensor. Its rule sequence is:
+
+```text
+scanning -> confirming -> locking -> warning -> launching -> cooldown -> scanning
+                                     \-> lost_lock -> scanning
+```
+
+The launcher prioritizes perceived `StrikeRole`, track/`CloseReconRole`,
+`WideReconRole`, then other UAVs. It never attacks UGVs. A shot requires
+continuous direct LOS through confirmation, lock and the visible warning
+countdown. Hit probability is recorded and explained by perceived distance,
+altitude, speed, lateral evasion and impact-time obstruction. Seeded random
+rolls are repeatable. Hits call `UTacticalAgentHealthComponent`, while reset
+restores ammo, heat, cooldown, target state, health and transient effects.
+
+Run the visible D2 demonstration with:
+
+```powershell
+& 'E:\UE_5.3\Engine\Binaries\Win64\UnrealEditor.exe' `
+  'E:\UEproject\LyraProject\LyraProject.uproject' `
+  '/Game/MARL/UrbanDepot/Maps/L_MARL_UrbanDepot' `
+  -game -log -windowed -ResX=1600 -ResY=900 `
+  -TacticalMARLS3AutoDemo -TacticalMARLS3Capture
+```
+
+It saves `S3_LockWarning_seed42.png`, `S3_Impact_seed42.png`, and
+`S3_LostLock_seed42.png` below `Saved/TacticalMARL/Screenshots`. The HUD and
+world markers show launcher state, target, lock line/countdown, missile/impact,
+ammo, heat, hit probability, target health and `LOCK BROKEN / NO FIRE`.
+
+For automated S3 acceptance, launch with `-TacticalMARLS3Test`, then run:
+
+```powershell
+python Python\s3_air_defense_check.py --host 127.0.0.1 --port 7777 --seed 42
+```
+
+The test covers occlusion/no fire, a deterministic hit through the S1 health
+interface, warning/incoming observations, cooldown and ammo decrement, same-seed
+roll/state reproduction, lateral evasion, warning-time lost lock, and reset.
+Results are written to `Saved/TacticalMARL/Reports/s3_air_defense_check.json`.
+The root response contains `red_air_defense`; every blue observation also has a
+compact `threat` object. `s3_test_stage` is rejected outside the guarded S3 test
+and auto-demo modes.
+
 ## Supported tasks
 
 - `idle`

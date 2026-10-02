@@ -1,6 +1,7 @@
 #include "TacticalMARLVisualizationSubsystem.h"
 
 #include "TacticalAgentHealthComponent.h"
+#include "TacticalAirDefenseSubsystem.h"
 #include "TacticalMARLCombatantProvider.h"
 #include "TacticalMARLEpisodeSubsystem.h"
 #include "TacticalMARLMissionSubsystem.h"
@@ -48,6 +49,9 @@ TAutoConsoleVariable<int32> CVarTacticalS0OverviewCamera(
 TAutoConsoleVariable<int32> CVarTacticalS2Debug(
     TEXT("tacticalmarl.S2Debug"), 1,
     TEXT("Show red sensor FOV, LOS and shared-alert markers (0/1)."), ECVF_Default);
+TAutoConsoleVariable<int32> CVarTacticalS3Debug(
+    TEXT("tacticalmarl.S3Debug"), 1,
+    TEXT("Show D2 launcher scan, lock, warning and missile markers (0/1)."), ECVF_Default);
 
 constexpr int32 ExpectedBlueAgents = 6;
 constexpr int32 ExpectedRedAgents = 5;
@@ -182,6 +186,7 @@ void UTacticalMARLVisualizationSubsystem::Tick(const float DeltaTime)
     TryStartAcceptanceDemo();
     UpdateS1AcceptanceDemo();
     UpdateS2AcceptanceDemo();
+    UpdateS3AcceptanceDemo();
     TryCaptureAcceptanceScreenshot();
 }
 
@@ -306,6 +311,8 @@ void UTacticalMARLVisualizationSubsystem::UpdateBlueLabels()
 void UTacticalMARLVisualizationSubsystem::UpdateRedLabels()
 {
     const UTacticalThreatSubsystem* Threat = GetWorld()->GetSubsystem<UTacticalThreatSubsystem>();
+    const UTacticalAirDefenseSubsystem* AirDefense = GetWorld()->GetSubsystem<UTacticalAirDefenseSubsystem>();
+    const FTacticalAirDefenseState AirState = AirDefense ? AirDefense->GetAirDefenseState() : FTacticalAirDefenseState();
     for (TActorIterator<AActor> It(GetWorld()); It; ++It)
     {
         TInlineComponentArray<UActorComponent*> Components;
@@ -327,10 +334,16 @@ void UTacticalMARLVisualizationSubsystem::UpdateRedLabels()
                 : TEXT("UNAWARE");
             const float AlertConfidence = Sensor ? Sensor->Confidence : 0.0f;
             const bool bD1 = Threat && Threat->IsThreatSensingEnabled();
+            const bool bLauncher = State.AgentId == TEXT("RED_ANTIUAV_01") && AirDefense && AirDefense->IsAirDefenseEnabled();
+            const FString PolicyState = bLauncher
+                ? FString::Printf(TEXT("D2 %s | Ammo %d | Heat %.0f"),
+                    *UTacticalAirDefenseSubsystem::StateToString(AirState.State).ToUpper(),
+                    AirState.AmmoRemaining, AirState.Heat)
+                : (bD1 ? TEXT("D1 SENSING") : TEXT("D0 PASSIVE"));
             Label->SetText(FText::FromString(FString::Printf(
                 TEXT("[RED] %s%s\n%s | %s\nSensor %s %.2f | LOS %s\nHP %.0f/%.0f | %s"),
                 *State.AgentId.ToString(), State.bMissionObjective ? TEXT(" [PRIMARY]") : TEXT(""),
-                *CompactRole(State.Role), bD1 ? TEXT("D1 SENSING") : TEXT("D0 PASSIVE"),
+                *CompactRole(State.Role), *PolicyState,
                 *AlertState, AlertConfidence, Sensor && Sensor->bDirectLineOfSight ? TEXT("DIRECT") : TEXT("NONE"),
                 State.Health, State.MaxHealth,
                 State.bAlive ? TEXT("ALIVE") : TEXT("NEUTRALIZED"))));
@@ -539,6 +552,9 @@ FString UTacticalMARLVisualizationSubsystem::BuildHUDPanelText() const
     const bool bD1 = Threat && Threat->IsThreatSensingEnabled();
     const FTacticalSharedAlertState Shared = Threat ? Threat->GetSharedAlertState() : FTacticalSharedAlertState();
     const FString SharedState = UTacticalThreatSubsystem::AlertStateToString(Shared.AlertState).ToUpper();
+    const UTacticalAirDefenseSubsystem* AirDefense = GetWorld()->GetSubsystem<UTacticalAirDefenseSubsystem>();
+    const bool bD2 = AirDefense && AirDefense->IsAirDefenseEnabled();
+    const FTacticalAirDefenseState AirState = AirDefense ? AirDefense->GetAirDefenseState() : FTacticalAirDefenseState();
     return FString::Printf(
         TEXT("TACTICAL MARL  |  %s\n")
         TEXT("DIFFICULTY %s  |  RED POLICY: %s\n")
@@ -546,16 +562,25 @@ FString UTacticalMARLVisualizationSubsystem::BuildHUDPanelText() const
         TEXT("MISSION PHASE: %s  |  Track %.2f\n")
         TEXT("RED ALERT: %s %.2f  |  Source %s  |  Target %s\n")
         TEXT("S2 STAGE: %s  |  Delay %.2fs  |  Messages %d\n")
+        TEXT("AIR DEFENSE: %s  |  Target %s  |  Ammo %d/%d  |  Heat %.0f/%.0f\n")
+        TEXT("Warning %.2fs  |  TTI %.2fs  |  Last %s  |  P(hit) %.2f\n")
         TEXT("BLUE ALIVE %d/6  |  RED ALIVE %d/5\n")
         TEXT("ROSTER: %s\n")
-        TEXT("Toggle: tacticalmarl.Difficulty / S2Debug / S0HUD / S0Labels / S0Zones / S0OverviewCamera"),
-        bD1 ? TEXT("S2 LOCAL PERCEPTION / SHARED ALERT") :
+        TEXT("Toggle: tacticalmarl.Difficulty / S2Debug / S3Debug / S0HUD / S0Labels / S0Zones / S0OverviewCamera"),
+        bD2 ? TEXT("S3 ANTI-UAV DEFENSE / DETERMINISTIC ATTACK") :
+            bD1 ? TEXT("S2 LOCAL PERCEPTION / SHARED ALERT") :
             (bS1Demo ? TEXT("S1 HEALTH / DISABLE ACCEPTANCE") : TEXT("S0 BASELINE")),
-        bD1 ? TEXT("D1") : TEXT("D0"), bD1 ? TEXT("LOCAL SENSORS / NO ATTACK") : TEXT("PASSIVE"),
+        bD2 ? TEXT("D2") : (bD1 ? TEXT("D1") : TEXT("D0")),
+        bD2 ? TEXT("LOCAL SENSORS + ANTI-UAV") : (bD1 ? TEXT("LOCAL SENSORS / NO ATTACK") : TEXT("PASSIVE")),
         Episode.EpisodeId, DisplaySeed, *EpisodePhase, Episode.Step,
         *MissionPhaseToString(static_cast<uint8>(Mission.Phase)).ToUpper(), Mission.TrackQuality,
         *SharedState, Shared.Confidence, *Shared.SourceAgentId.ToString(), *Shared.TargetAgentId.ToString(),
         Threat ? *Threat->GetAcceptanceStage() : TEXT("none"), Shared.LastPropagationDelay, Shared.DeliveredMessageCount,
+        *UTacticalAirDefenseSubsystem::StateToString(AirState.State).ToUpper(), *AirState.TargetAgentId.ToString(),
+        AirState.AmmoRemaining, AirDefense ? AirDefense->AmmoCapacity : 0, AirState.Heat,
+        AirDefense ? AirDefense->MaximumHeat : 0.0f,
+        AirState.WarningRemainingSeconds, AirState.EstimatedTimeToImpact,
+        *AirState.LastShotResult.ToUpper(), AirState.LastHitProbability,
         Counts.BlueAlive, Counts.RedAlive, Counts.bRosterValid ? TEXT("VALID 6+5") : TEXT("WAITING/INVALID"));
 }
 
@@ -563,6 +588,8 @@ FString UTacticalMARLVisualizationSubsystem::BuildRosterPanelText() const
 {
     const UTacticalThreatSubsystem* Threat = GetWorld()->GetSubsystem<UTacticalThreatSubsystem>();
     const FTacticalSharedAlertState Shared = Threat ? Threat->GetSharedAlertState() : FTacticalSharedAlertState();
+    const UTacticalAirDefenseSubsystem* AirDefense = GetWorld()->GetSubsystem<UTacticalAirDefenseSubsystem>();
+    const FTacticalAirDefenseState AirState = AirDefense ? AirDefense->GetAirDefenseState() : FTacticalAirDefenseState();
     FString Result = TEXT("UNIT ROSTER  |  JSON AGENT IDs\n");
     Result += TEXT("Side  Agent ID          Type/Role   | Current task  | Health/Status\n");
     Result += TEXT("--------------------------------------------------------------------------\n");
@@ -571,9 +598,12 @@ FString UTacticalMARLVisualizationSubsystem::BuildRosterPanelText() const
         Result += Row;
         Result += TEXT("\n");
     }
-    Result += FString::Printf(TEXT("\nR* = PRIMARY OBJECTIVE  |  RED SHARED ALERT: %s %.2f  |  %s"),
+    Result += FString::Printf(TEXT("\nR* = PRIMARY OBJECTIVE  |  RED SHARED ALERT: %s %.2f  |  %s\nAIR DEFENSE: %s | Target %s | Ammo %d | Last %s"),
         *UTacticalThreatSubsystem::AlertStateToString(Shared.AlertState).ToUpper(), Shared.Confidence,
-        Threat && Threat->IsThreatSensingEnabled() ? TEXT("D1 SENSORS / NO ATTACK") : TEXT("D0 PASSIVE"));
+        AirDefense && AirDefense->IsAirDefenseEnabled() ? TEXT("D2 ANTI-UAV ACTIVE") :
+            (Threat && Threat->IsThreatSensingEnabled() ? TEXT("D1 SENSORS / NO ATTACK") : TEXT("D0 PASSIVE")),
+        *UTacticalAirDefenseSubsystem::StateToString(AirState.State).ToUpper(),
+        *AirState.TargetAgentId.ToString(), AirState.AmmoRemaining, *AirState.LastShotResult.ToUpper());
     return Result;
 }
 
@@ -614,10 +644,13 @@ void UTacticalMARLVisualizationSubsystem::DrawSceneMarkers() const
     {
         const UTacticalThreatSubsystem* Threat = GetWorld()->GetSubsystem<UTacticalThreatSubsystem>();
         const bool bD1 = Threat && Threat->IsThreatSensingEnabled();
+        const UTacticalAirDefenseSubsystem* AirDefense = GetWorld()->GetSubsystem<UTacticalAirDefenseSubsystem>();
+        const bool bD2 = AirDefense && AirDefense->IsAirDefenseEnabled();
         DrawDebugCircle(GetWorld(), RedDefenseLocation.GetValue() + FVector(0, 0, 20), 1500.0f, 48,
             RedColor, false, 0.25f, 0, 20.0f, FVector(1, 0, 0), FVector(0, 1, 0), false);
         DrawDebugString(GetWorld(), RedDefenseLocation.GetValue() + FVector(0, -1700, 500),
-            bD1 ? TEXT("RED DEFENSE ZONE | D1 LOCAL SENSORS / NO ATTACK") : TEXT("RED DEFENSE ZONE | D0 PASSIVE"),
+            bD2 ? TEXT("RED DEFENSE ZONE | D2 ANTI-UAV ACTIVE") :
+                (bD1 ? TEXT("RED DEFENSE ZONE | D1 LOCAL SENSORS / NO ATTACK") : TEXT("RED DEFENSE ZONE | D0 PASSIVE")),
             nullptr, RedColor, 0.25f, false, 1.6f);
     }
     if (PrimaryObjectiveLocation.IsSet())
@@ -680,6 +713,58 @@ void UTacticalMARLVisualizationSubsystem::DrawSceneMarkers() const
                 nullptr, SharedColor, 0.25f, false, 1.4f);
         }
     }
+    const UTacticalAirDefenseSubsystem* AirDefense = GetWorld()->GetSubsystem<UTacticalAirDefenseSubsystem>();
+    if (AirDefense && AirDefense->IsAirDefenseEnabled() && CVarTacticalS3Debug.GetValueOnGameThread() != 0)
+    {
+        const FTacticalAirDefenseState AirState = AirDefense->GetAirDefenseState();
+        AActor* Launcher = AirDefense->GetLauncherActor();
+        AActor* Target = AirDefense->GetCurrentTargetActor();
+        if (Launcher)
+        {
+            const FVector Origin = Launcher->GetActorLocation() + FVector(0, 0, 180);
+            if (AirState.State == ETacticalAirDefenseState::Scanning)
+            {
+                const float Angle = FMath::Fmod(GetWorld()->GetTimeSeconds() * 75.0f, 140.0f) - 70.0f;
+                const FVector ScanDirection = Launcher->GetActorForwardVector().RotateAngleAxis(Angle, FVector::UpVector);
+                DrawDebugLine(GetWorld(), Origin, Origin + ScanDirection * 2800.0f,
+                    FColor::Cyan, false, 0.25f, 0, 18.0f);
+                DrawDebugString(GetWorld(), Origin + FVector(0, 0, 260),
+                    TEXT("D2 ANTI-UAV | SECTOR SCANNING"), nullptr, FColor::Cyan, 0.25f, false, 1.25f);
+            }
+            if (Target && !AirState.TargetAgentId.IsNone())
+            {
+                const FColor LockColor = AirState.State == ETacticalAirDefenseState::Warning ? FColor::Red :
+                    (AirState.State == ETacticalAirDefenseState::Locking ? FColor::Yellow : FColor(255, 140, 0));
+                DrawDebugLine(GetWorld(), Origin, AirState.LastPerceivedLocation,
+                    LockColor, false, 0.25f, 0, AirState.State == ETacticalAirDefenseState::Warning ? 28.0f : 16.0f);
+                if (AirState.State == ETacticalAirDefenseState::Warning)
+                {
+                    DrawDebugSphere(GetWorld(), AirState.LastPerceivedLocation, 330.0f, 24,
+                        FColor::Red, false, 0.25f, 0, 22.0f);
+                    DrawDebugString(GetWorld(), AirState.LastPerceivedLocation + FVector(0, 0, 420),
+                        FString::Printf(TEXT("MISSILE LOCK WARNING | LAUNCH %.1fs"), AirState.WarningRemainingSeconds),
+                        nullptr, FColor::Red, 0.25f, false, 1.6f);
+                }
+                else if (AirState.State == ETacticalAirDefenseState::LostLock)
+                {
+                    DrawDebugString(GetWorld(), AirState.LastPerceivedLocation + FVector(0, 0, 420),
+                        TEXT("LOCK BROKEN | LOS BLOCKED | NO FIRE"), nullptr, FColor::Green, 0.25f, false, 1.5f);
+                }
+            }
+            if (AirState.State == ETacticalAirDefenseState::Launching)
+            {
+                const FVector Projectile = AirDefense->GetProjectileLocation();
+                DrawDebugLine(GetWorld(), Origin, Projectile, FColor::Red, false, 0.25f, 0, 22.0f);
+                DrawDebugPoint(GetWorld(), Projectile, 42.0f, FColor::Yellow, false, 0.25f);
+                if (Target)
+                {
+                    DrawDebugString(GetWorld(), Target->GetActorLocation() + FVector(0, 0, 500),
+                        FString::Printf(TEXT("MISSILE INCOMING | TTI %.2fs"), AirState.EstimatedTimeToImpact),
+                        nullptr, FColor::Red, 0.25f, false, 1.7f);
+                }
+            }
+        }
+    }
 }
 
 void UTacticalMARLVisualizationSubsystem::UpdateOverviewCamera()
@@ -715,12 +800,13 @@ void UTacticalMARLVisualizationSubsystem::UpdateOverviewCamera()
     const FVector Red = RedDefenseLocation.GetValue();
     const bool bS1Demo = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS1AutoDemo"));
     const bool bS2Demo = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS2AutoDemo"));
-    const FVector Center = bS2Demo
+    const bool bS3Demo = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS3AutoDemo"));
+    const FVector Center = (bS2Demo || bS3Demo)
         ? Red + FVector(900, 0, 350)
         : bS1Demo
             ? Blue + FVector(0, 0, 180)
             : (Blue + Red) * 0.5f + FVector(0, 0, 250);
-    const float Span = bS2Demo ? 4200.0f :
+    const float Span = (bS2Demo || bS3Demo) ? 4200.0f :
         (bS1Demo ? 3800.0f : FMath::Max(8000.0f, FVector::Dist2D(Blue, Red)));
     const FVector CameraLocation = Center + FVector(-Span * 0.72f, -Span * 0.72f, Span * 1.18f);
     Camera->SetActorLocationAndRotation(CameraLocation, (Center - CameraLocation).Rotation());
@@ -741,7 +827,8 @@ void UTacticalMARLVisualizationSubsystem::TryStartAcceptanceDemo()
     const bool bS0Demo = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS0AutoDemo"));
     const bool bS1Demo = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS1AutoDemo"));
     const bool bS2Demo = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS2AutoDemo"));
-    if (bAutoDemoStarted || (!bS0Demo && !bS1Demo && !bS2Demo) ||
+    const bool bS3Demo = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS3AutoDemo"));
+    if (bAutoDemoStarted || (!bS0Demo && !bS1Demo && !bS2Demo && !bS3Demo) ||
         !Counts.bRosterValid || GetWorld()->GetTimeSeconds() < 35.0f)
     {
         return;
@@ -753,7 +840,7 @@ void UTacticalMARLVisualizationSubsystem::TryStartAcceptanceDemo()
             bAutoDemoStarted = true;
             AutoDemoStartedAt = GetWorld()->GetTimeSeconds();
             UE_LOG(LogTacticalS0Visuals, Display, TEXT("%s acceptance demo started with seed 42"),
-                bS2Demo ? TEXT("S2") : (bS1Demo ? TEXT("S1") : TEXT("S0")));
+                bS3Demo ? TEXT("S3") : (bS2Demo ? TEXT("S2") : (bS1Demo ? TEXT("S1") : TEXT("S0"))));
         }
     }
 }
@@ -828,8 +915,66 @@ void UTacticalMARLVisualizationSubsystem::UpdateS2AcceptanceDemo()
     }
 }
 
+void UTacticalMARLVisualizationSubsystem::UpdateS3AcceptanceDemo()
+{
+    if (!bAutoDemoStarted || !FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS3AutoDemo"))) return;
+    UTacticalAirDefenseSubsystem* AirDefense = GetWorld()->GetSubsystem<UTacticalAirDefenseSubsystem>();
+    if (!AirDefense) return;
+    const double Elapsed = GetWorld()->GetTimeSeconds() - AutoDemoStartedAt;
+    FString Error;
+    if (!bS3VisibleStageApplied && Elapsed >= 1.0)
+    {
+        bS3VisibleStageApplied = AirDefense->SetAcceptanceStage(TEXT("visible_hit"), Error);
+        if (!bS3VisibleStageApplied) UE_LOG(LogTacticalS0Visuals, Error, TEXT("S3 visible-hit stage failed: %s"), *Error);
+    }
+    const FTacticalAirDefenseState State = AirDefense->GetAirDefenseState();
+    // After one resolved shot and cooldown, allow a second lock to form, then
+    // insert the acceptance wall during its warning window to prove no launch.
+    if (!bS3LostStageApplied && State.ShotCount >= 1 && State.State == ETacticalAirDefenseState::Warning)
+    {
+        bS3LostStageApplied = AirDefense->SetAcceptanceStage(TEXT("lost_lock"), Error);
+        if (!bS3LostStageApplied) UE_LOG(LogTacticalS0Visuals, Error, TEXT("S3 lost-lock stage failed: %s"), *Error);
+    }
+}
+
 void UTacticalMARLVisualizationSubsystem::TryCaptureAcceptanceScreenshot()
 {
+    const bool bS3Capture = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS3Capture"));
+    if (bS3Capture && bAutoDemoStarted)
+    {
+        const UTacticalAirDefenseSubsystem* AirDefense = GetWorld()->GetSubsystem<UTacticalAirDefenseSubsystem>();
+        if (!AirDefense) return;
+        const FTacticalAirDefenseState State = AirDefense->GetAirDefenseState();
+        FString Filename;
+        bool* Flag = nullptr;
+        if (!bS3WarningScreenshotRequested && State.ShotCount == 0 && State.State == ETacticalAirDefenseState::Warning)
+        {
+            Filename = TEXT("S3_LockWarning_seed42.png");
+            Flag = &bS3WarningScreenshotRequested;
+        }
+        else if (!bS3ImpactScreenshotRequested && State.ShotCount >= 1 &&
+            State.State == ETacticalAirDefenseState::Cooldown && State.StateElapsedSeconds >= 0.25f)
+        {
+            Filename = TEXT("S3_Impact_seed42.png");
+            Flag = &bS3ImpactScreenshotRequested;
+        }
+        else if (!bS3LostScreenshotRequested && State.ShotCount >= 1 &&
+            State.State == ETacticalAirDefenseState::LostLock && State.StateElapsedSeconds >= 0.25f)
+        {
+            Filename = TEXT("S3_LostLock_seed42.png");
+            Flag = &bS3LostScreenshotRequested;
+        }
+        if (Flag)
+        {
+            const FString Directory = FPaths::ProjectSavedDir() / TEXT("TacticalMARL/Screenshots");
+            FPlatformFileManager::Get().GetPlatformFile().CreateDirectoryTree(*Directory);
+            const FString FullPath = Directory / Filename;
+            FScreenshotRequest::RequestScreenshot(FullPath, true, false);
+            *Flag = true;
+            UE_LOG(LogTacticalS0Visuals, Display, TEXT("Requested S3 acceptance screenshot: %s"), *FullPath);
+        }
+        return;
+    }
     const bool bS2Capture = FParse::Param(FCommandLine::Get(), TEXT("TacticalMARLS2Capture"));
     if (bS2Capture && bAutoDemoStarted)
     {

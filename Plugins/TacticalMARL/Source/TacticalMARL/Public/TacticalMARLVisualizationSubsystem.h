@@ -55,6 +55,7 @@ private:
     void TryStartAcceptanceDemo();
     void UpdateS1AcceptanceDemo();
     void UpdateS2AcceptanceDemo();
+    void UpdateS3AcceptanceDemo();
     void TryCaptureAcceptanceScreenshot();
     UTextRenderComponent* FindOrCreateLabel(AActor* Actor, const FColor& Color, float Height);
     void RemoveStaleLabels(const TSet<TWeakObjectPtr<AActor>>& ActiveActors);
@@ -81,6 +82,11 @@ private:
     bool bS2OccludedScreenshotRequested = false;
     bool bS2TrackingScreenshotRequested = false;
     bool bS2LostScreenshotRequested = false;
+    bool bS3VisibleStageApplied = false;
+    bool bS3LostStageApplied = false;
+    bool bS3WarningScreenshotRequested = false;
+    bool bS3ImpactScreenshotRequested = false;
+    bool bS3LostScreenshotRequested = false;
     bool bScreenshotRequested = false;
     TWeakObjectPtr<AActor> S1UAVTarget;
     TWeakObjectPtr<AActor> S1UGVTarget;

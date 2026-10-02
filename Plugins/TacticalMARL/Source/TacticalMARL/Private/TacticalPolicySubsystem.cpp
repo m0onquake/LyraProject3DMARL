@@ -1,6 +1,7 @@
 #include "TacticalPolicySubsystem.h"
 
 #include "TacticalAgentHealthComponent.h"
+#include "TacticalAirDefenseSubsystem.h"
 #include "TacticalMARLEpisodeSubsystem.h"
 #include "TacticalMARLMissionSubsystem.h"
 #include "TacticalThreatSubsystem.h"
@@ -181,6 +182,20 @@ bool UTacticalPolicySubsystem::SubmitCommandJson(const FString& JsonCommand, FSt
             OutResponse = BuildResponse(bOk, bOk ? FString() : (Error.IsEmpty() ? TEXT("s2_stage_failed") : Error));
             return bOk;
         }
+        if (Request.Equals(TEXT("s3_test_stage"), ESearchCase::IgnoreCase))
+        {
+            FString Stage;
+            if (!Root->TryGetStringField(TEXT("stage"), Stage))
+            {
+                OutResponse = BuildResponse(false, TEXT("missing_s3_test_stage"));
+                return false;
+            }
+            FString Error;
+            UTacticalAirDefenseSubsystem* AirDefense = GetWorld()->GetSubsystem<UTacticalAirDefenseSubsystem>();
+            const bool bOk = AirDefense && AirDefense->SetAcceptanceStage(Stage, Error);
+            OutResponse = BuildResponse(bOk, bOk ? FString() : (Error.IsEmpty() ? TEXT("s3_stage_failed") : Error));
+            return bOk;
+        }
         const bool bStepRequest = Request.Equals(TEXT("step"), ESearchCase::IgnoreCase);
         const bool bActionsRequest = Request.Equals(TEXT("actions"), ESearchCase::IgnoreCase);
         if (bStepRequest || bActionsRequest)
@@ -268,6 +283,7 @@ bool UTacticalPolicySubsystem::RouteCommand(const FString& JsonCommand, FString&
 FString UTacticalPolicySubsystem::GetObservationsJson() const
 {
     const UTacticalMARLMissionSubsystem* MissionSubsystem = GetWorld()->GetSubsystem<UTacticalMARLMissionSubsystem>();
+    const UTacticalAirDefenseSubsystem* AirDefenseSubsystem = GetWorld()->GetSubsystem<UTacticalAirDefenseSubsystem>();
     auto MakeMissionObservation = [MissionSubsystem]()
     {
         TSharedRef<FJsonObject> Mission = MakeShared<FJsonObject>();
@@ -303,6 +319,7 @@ FString UTacticalPolicySubsystem::GetObservationsJson() const
         {
             Agent->SetStringField(TEXT("agent_type"), TEXT("uav"));
             Agent->SetObjectField(TEXT("mission"), MakeMissionObservation());
+            if (AirDefenseSubsystem) AirDefenseSubsystem->AppendAgentThreatFields(Agent.ToSharedRef(), It->AgentId);
             Agents.Add(MakeShared<FJsonValueObject>(Agent));
         }
     }
@@ -312,6 +329,7 @@ FString UTacticalPolicySubsystem::GetObservationsJson() const
         if (FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(It->GetTelemetryJson()), Agent) && Agent.IsValid())
         {
             Agent->SetObjectField(TEXT("mission"), MakeMissionObservation());
+            if (AirDefenseSubsystem) AirDefenseSubsystem->AppendAgentThreatFields(Agent.ToSharedRef(), It->AgentId);
             Agents.Add(MakeShared<FJsonValueObject>(Agent));
         }
     }
@@ -339,6 +357,10 @@ FString UTacticalPolicySubsystem::BuildResponse(bool bOk, const FString& Error) 
     if (const UTacticalThreatSubsystem* Threat = GetWorld()->GetSubsystem<UTacticalThreatSubsystem>())
     {
         Threat->AppendThreatFields(Root);
+    }
+    if (const UTacticalAirDefenseSubsystem* AirDefense = GetWorld()->GetSubsystem<UTacticalAirDefenseSubsystem>())
+    {
+        AirDefense->AppendAirDefenseFields(Root);
     }
 
     // Lightweight health data used by the long-running Python evaluator.  It

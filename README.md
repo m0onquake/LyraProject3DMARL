@@ -46,7 +46,7 @@ JSONL trajectories are written under `Saved/TacticalMARL/Logs` and remain
 local-only. See `Plugins/TacticalMARL/README.md` for the UDP schema, stress
 test command and report locations.
 
-## S0-S2 acceptance
+## S0-S3 acceptance
 
 The UrbanDepot Game mode includes the S0 overview/HUD and S1 blue-force health
 and disabled-state visualization. D1 adds S2 red-force local sensing, delayed
@@ -57,6 +57,10 @@ visualization without enabling red attacks. Run
 and launch with `-TacticalMARLS2Test` before running
 `s2_threat_check.py --seed 42` for S2. Detailed evidence is recorded in the
 corresponding `Docs/S0...`, `Docs/S1...`, and `Docs/S2...` acceptance records.
+S3 adds the D2 Anti-UAV launcher state machine, visible lock warning, missile
+flight/impact, deterministic hit calculation, ammunition/heat limits and S1
+health damage. Launch with `-TacticalMARLS3Test` and run
+`s3_air_defense_check.py --seed 42`; see the S3 acceptance record for evidence.
 
 ## Full local history
 
